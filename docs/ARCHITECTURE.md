@@ -1,5 +1,18 @@
 # Architecture
 
+## Candidate screening windows
+
+`candidateTarget` is the number of previously unseen source identities that a
+model must actually screen. Raw search records that match persistent campaign
+memory, repeat within another query lane, or lack a stable identity do not
+consume that target. Adapters must continue their resumable frontier until the
+target is reached or every configured source lane is demonstrably exhausted.
+
+Use `sweeper.screening.CandidateWindow` at adapter boundaries. Its counters keep
+raw discovery volume, remembered skips, and newly screened candidates distinct,
+so user interfaces cannot mistake a provider fetch ceiling for completed
+screening work.
+
 ## Navigation and staged-pool continuation
 
 Source adapters may expose up to ten ordered navigation queries. A query
