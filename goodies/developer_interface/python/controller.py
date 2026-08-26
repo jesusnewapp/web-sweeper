@@ -423,11 +423,22 @@ class SweeperController:
             and age <= 300
         )
         state_status = str(state.get("status", "")).lower()
+        configured_queued = bool(definition.get("queued")) and state_status != "running"
+        terminal = (
+            state_status in {"complete", "completed", "exhausted"}
+            or any(marker in state_stage.casefold() for marker in (
+                "campaign-complete", "batch-complete", "source-exhausted",
+            ))
+        )
         running = state_status == "running" or progress_active
         explicit_failure = bool(state.get("lastFailure")) or any(
             marker in state_status for marker in ("failed", "error", "blocked")
         )
-        if explicit_failure:
+        if configured_queued:
+            health = "healthy"
+        elif terminal:
+            health = "healthy"
+        elif explicit_failure:
             health = "failed"
         elif not running:
             health = "watch"
@@ -463,18 +474,24 @@ class SweeperController:
             "published-and-five-gate-verified",
             "already-live-and-five-gate-accounted",
         }
+        if permanent_live_receipt:
+            # A durable promotion receipt retires the transient handoff.  Keep
+            # the ledger for history, but never let it hold the source card in
+            # publisher-custody after five-gate completion.
+            pending_handoff = None
         if pending_handoff is not None:
             handed_off = _count(pending_handoff.get("books"))
-            # Custody moves to staging, but the accepted books remain visible
-            # on their source card until a permanent live receipt exists.
-            display_accepted = handed_off
-            display_target = handed_off
+            # Push transfers custody away from the acquisition model.  The
+            # publisher queue continues to show the protected books, while the
+            # source card resets immediately for every adapter/model.
+            display_accepted = 0
+            display_target = _count(definition.get("target")) or target
             detail = (
-                f"{handed_off} accepted books protected · handed to staging"
+                f"Current model reset · {handed_off} protected in publisher custody"
             )
         if staged_custody > 0 and not permanent_live_receipt:
             display_accepted = staged_custody
-            display_target = staged_custody
+            display_target = _count(definition.get("target")) or target
             detail = f"{staged_custody} accepted books protected · publisher custody"
         elif staged_custody > 0 and permanent_live_receipt:
             already_live = max(0, staged_custody - live_custody)
@@ -525,7 +542,7 @@ class SweeperController:
         mode_detail = {
             "mode": mode,
             "stage": stage,
-            "accepted": accepted,
+            "accepted": display_accepted,
             "target": target,
             "discovered": _count(_first(checkpoint, ("discovered", "discoveredCount"),
                                        _first(state, ("discovered", "discoveredCount"), 0))),
@@ -559,7 +576,7 @@ class SweeperController:
             **supplemental_detail,
         }
         review_total = _count(state.get("reviewTotal"))
-        if review_total:
+        if review_total and not permanent_live_receipt:
             review_processed = _count(state.get("reviewProcessed"))
             review_remaining = max(0, review_total - review_processed)
             adapter_times = [
@@ -596,12 +613,20 @@ class SweeperController:
                 f"{accepted} authoritatively accepted"
             )
         if stage.casefold() == "ready-for-next-batch":
-            mode_detail.update({
-                "substageProgressLabel": "Waiting for next batch",
-                "substageProgressCurrent": 0,
-                "substageProgressTarget": 1,
-                "nextStage": "Acquire lane lock when the next batch starts",
-            })
+            if str(state.get("nextStage", "")).casefold() == "source-exhausted":
+                mode_detail.update({
+                    "substageProgressLabel": "Source exhausted",
+                    "substageProgressCurrent": 1,
+                    "substageProgressTarget": 1,
+                    "nextStage": "Initialize only when new upstream identifiers appear",
+                })
+            else:
+                mode_detail.update({
+                    "substageProgressLabel": "Waiting for next batch",
+                    "substageProgressCurrent": 0,
+                    "substageProgressTarget": 1,
+                    "nextStage": "Acquire lane lock when the next batch starts",
+                })
         crawl_counts = state.get("counts") if isinstance(state.get("counts"), dict) else {}
         if crawl_counts:
             mode_detail.update({
@@ -768,19 +793,67 @@ class SweeperController:
             max(accepted_evidence).isoformat().replace("+00:00", "Z")
             if accepted_evidence else None
         )
+        discovered_candidates = _count(_first(
+            state, ("discoveredCandidateInventory", "discoveryCandidatesFound"), 0))
+        qualified_candidates = _count(_first(
+            state, ("qualifiedCandidateInventory", "candidateCount"), 0))
         candidate_count = _count(_first(
             state,
-            ("candidateCount", "retrievalQueued", "sourceCandidateInventory",
-             "candidateInventory", "prefiltered", "prefilteredCount"),
+            ("qualifiedCandidateInventory", "candidateCount", "retrievalQueued", "sourceCandidateInventory",
+             "candidateInventory", "discoveryCandidatesFound", "prefiltered",
+             "prefilteredCount"),
             _first(checkpoint, ("candidateCount", "prefiltered", "prefilteredCount"), 0),
         ))
         if not candidate_count:
             candidate_count = _count(state.get("candidates"))
-        moving_current = _count(mode_detail.get("substageProgressCurrent"))
-        moving_target = _count(mode_detail.get("substageProgressTarget"))
-        if moving_target and any(token in stage.casefold() for token in ("retriev", "acquisition", "screening")):
-            candidate_count = max(0, moving_target - moving_current)
+        if pending_handoff is not None:
+            candidate_count = 0
+            display_accepted = 0
+            display_target = _count(definition.get("target")) or target
+            mode_detail["handedOffBooks"] = _count(pending_handoff.get("books"))
+            # A source-specific completed worker may continue refreshing its
+            # old terminal stage after Push. Publisher custody is authoritative
+            # for the active card until the permanent receipt arrives.
+            stage = "publisher-custody"
+            health = "healthy"
+            detail = (
+                f"Current model reset · {_count(pending_handoff.get('books'))} "
+                "protected in publisher custody"
+            )
+            mode_detail.update({
+                "stage": stage,
+                "mode": "uploading",
+                "accepted": 0,
+                "candidateCount": 0,
+                "handoffPending": True,
+                "handoffBooks": _count(pending_handoff.get("books")),
+                "custodyStage": "staging",
+            })
+        # Retrieval progress and source inventory are different quantities.
+        # Never replace the candidate inventory with a moving remainder; that
+        # made a healthy review appear to lose candidates as metadata advanced.
+        mode_detail["discoveredCandidateInventory"] = discovered_candidates
+        mode_detail["qualifiedCandidateInventory"] = qualified_candidates
         mode_detail["candidateCount"] = candidate_count
+        mode_detail["candidateRecords"] = max(
+            candidate_count,
+            _count(mode_detail.get("candidateRecords")),
+        )
+        candidate_target = _count(state.get("candidateTarget")) or _count(
+            definition.get("candidateTarget")
+        )
+        mode_detail["candidateTarget"] = candidate_target
+        # TCP-style adapters preserve distinct upstream corpus boundaries even
+        # when the lane rolls them up into one model.  Pass this neutral source
+        # inventory through so current builds can display provenance and live
+        # candidate counts without teaching the controller provider semantics.
+        if isinstance(state.get("masterSources"), list):
+            mode_detail["masterSources"] = state["masterSources"]
+            mode_detail["candidateRecords"] = max(
+                mode_detail["candidateRecords"],
+                sum(_count(item.get("candidateRecords")) for item in state["masterSources"]
+                    if isinstance(item, dict)),
+            )
         return {
             "id": lane_id,
             "name": definition.get("name", "Unnamed lane"),
@@ -789,13 +862,14 @@ class SweeperController:
             "acceptedCumulative": accepted_cumulative,
             "acceptedUpdatedAt": accepted_updated_at,
             "candidateCount": candidate_count,
+            "candidateTarget": candidate_target,
             "target": display_target,
             "uploaded": display_uploaded,
             "health": health,
             "detail": detail,
             "updatedAt": updated,
             "currentRoot": current_root,
-            "mode": mode,
+            "mode": "queued" if configured_queued else "complete" if terminal else mode,
             "modeDetail": mode_detail,
             "authoritativeGrowthMetric": str(
                 mode_detail.get("authoritativeGrowthMetric") or "accepted"
@@ -820,7 +894,8 @@ class SweeperController:
                 "prefiltered": _count(_first(checkpoint, ("prefiltered", "prefilteredCount"),
                                             _first(state, ("prefiltered", "prefilteredCount"), 0))),
                 "candidateInventory": _count(_first(
-                    state, ("sourceCandidateInventory", "candidateInventory", "candidateCount"), 0)),
+                    state, ("sourceCandidateInventory", "candidateInventory",
+                            "candidateCount", "discoveryCandidatesFound"), 0)),
                 "candidateOffset": _count(_first(state, ("candidateOffset", "cursor", "page"), 0)),
                 "discoveryFrontier": _count(_first(state, ("discoveryFrontier", "frontier"), 0)),
                 "stateUpdatedAt": state.get("updatedAt", ""),
@@ -865,7 +940,166 @@ class SweeperController:
         atomic_temporary.replace(destination)
         return {"accepted": True, **payload}
 
+    def _publication_campaign_lane(self, definition: Dict[str, Any]) -> Dict[str, Any]:
+        """Expose an active deterministic publication campaign from receipts.
+
+        This is authoritative when a campaign glob is configured.  It avoids
+        projecting an obsolete listener or an unrelated staging handoff onto
+        the live-production card.
+        """
+        pattern = str(definition.get("publicationCampaignGlob") or "")
+        pattern_path = Path(pattern).expanduser()
+        if pattern_path.is_absolute():
+            roots = sorted(pattern_path.parent.glob(pattern_path.name))
+        else:
+            roots = sorted(self.project_root.glob(pattern))
+        completed: List[tuple[Path, Dict[str, Any]]] = []
+        active_root: Optional[Path] = None
+        for root in roots:
+            verification = _read_json(root / "publication_verification.json")
+            published_count = _count(verification.get("published"))
+            verified_count = _count(verification.get("verified"))
+            if published_count > 0 and verified_count >= published_count:
+                completed.append((root, verification))
+            elif active_root is None:
+                active_root = root
+        campaign_published = sum(_count(row.get("published")) for _, row in completed)
+        campaign_verified = sum(_count(row.get("verified")) for _, row in completed)
+        campaign_duplicates = sum(
+            _count(row.get("removedLiveOverlaps")) for _, row in completed
+        )
+        total_books = _count(definition.get("publicationCampaignBooks")) or sum(
+            _count(_read_json(root / "catalog.json").get("books", [])) for root in roots
+        )
+        total_batches = len(roots)
+        completed_batches = len(completed)
+        if active_root is None:
+            stage = "campaign-complete"
+            current_count = total_books
+            current_target = total_books
+            current_uploaded = campaign_published
+            current_progress: Dict[str, Any] = {}
+            updated = max(
+                (str(row.get("verifiedAt") or "") for _, row in completed),
+                default="",
+            )
+            health = "healthy"
+            batch_index = total_batches
+        else:
+            current_progress = _publication_progress(active_root)
+            stage = str(current_progress.get("phase") or "fresh-live-delta")
+            catalog_count = _count(_read_json(active_root / "catalog.json").get("books", []))
+            current_uploaded = _count(current_progress.get("uploaded"))
+            current_published = _count(current_progress.get("published"))
+            current_verified = _count(current_progress.get("liveVerified"))
+            current_count = {
+                "storage-upload": current_uploaded,
+                "publication-complete": current_published,
+                "live-verification": current_verified,
+                "complete": current_verified,
+            }.get(stage, 0)
+            current_target = {
+                "storage-upload": _count(current_progress.get("uploadTarget")) or catalog_count,
+                "publication-complete": _count(current_progress.get("publishable")) or catalog_count,
+                "live-verification": _count(current_progress.get("verificationTarget")) or catalog_count,
+                "complete": _count(current_progress.get("verificationTarget")) or catalog_count,
+            }.get(stage, catalog_count)
+            updated = str(current_progress.get("updatedAt") or "")
+            if not updated:
+                try:
+                    updated = datetime.fromtimestamp(
+                        (active_root / "publication_progress.json").stat().st_mtime,
+                        timezone.utc,
+                    ).isoformat().replace("+00:00", "Z")
+                except OSError:
+                    updated = ""
+            observed = _timestamp(updated)
+            age = (datetime.now(timezone.utc) - observed).total_seconds() if observed else None
+            if age is None or age > int(definition.get("redAfterSeconds", 3600)):
+                health = "stuck"
+            elif age > int(definition.get("watchAfterSeconds", 900)):
+                health = "watch"
+            else:
+                health = "healthy"
+            batch_index = roots.index(active_root) + 1
+        gate_label = {
+            "fresh-live-delta": "Fresh live duplicate delta",
+            "room-allocation": "Duplicate-safe room allocation",
+            "storage-upload": "Storage upload",
+            "publication-complete": "Publishing",
+            "live-verification": "Live verification",
+            "complete": "Live verification",
+            "campaign-complete": "Campaign complete",
+        }.get(stage, "Publication")
+        history = [{
+            "batchNumber": roots.index(root) + 1,
+            "root": str(root),
+            "status": "live-verified",
+            "staged": 0,
+            "published": _count(row.get("published")),
+            "liveVerified": _count(row.get("verified")),
+            "completedAt": row.get("verifiedAt", ""),
+        } for root, row in reversed(completed[-8:])]
+        mode_detail = {
+            "mode": "complete" if active_root is None else "uploading",
+            "stage": stage,
+            "prepared": _count(current_progress.get("prepared")),
+            "duplicatesRemoved": campaign_duplicates,
+            "uploaded": current_uploaded,
+            "published": campaign_published,
+            "liveVerified": campaign_verified,
+            "gateProgressLabel": gate_label,
+            "gateProgressCurrent": current_count,
+            "gateProgressTarget": current_target,
+            "substageProgressLabel": gate_label,
+            "substageProgressCurrent": current_count,
+            "substageProgressTarget": current_target,
+            "campaignBatchesCompleted": completed_batches,
+            "campaignBatchesTotal": total_batches,
+            "campaignBatchIndex": batch_index,
+            "campaignLiveVerified": campaign_verified,
+            "campaignBooksTotal": total_books,
+            "campaignDuplicatesRemoved": campaign_duplicates,
+            "completionState": "published" if active_root is None else "",
+            "writerSerialized": True,
+            "currentRoot": str(active_root or ""),
+        }
+        return {
+            "id": definition.get("id", "publisher"),
+            "name": definition.get("name", "Stage-to-live publisher"),
+            "stage": stage,
+            "accepted": current_count,
+            "candidateTarget": 0,
+            "target": current_target,
+            "uploaded": current_uploaded,
+            "published": campaign_published,
+            "liveVerified": campaign_verified,
+            "health": health,
+            "detail": (
+                f"Campaign {campaign_verified}/{total_books} live-verified · "
+                f"batch {batch_index}/{total_batches} · "
+                f"{campaign_duplicates} duplicates safely removed"
+            ),
+            "queueReady": max(0, total_batches - completed_batches - (1 if active_root else 0)),
+            "queueParked": 0,
+            "queuePreflight": 0,
+            "batchQueue": [],
+            "updatedAt": updated,
+            "currentRoot": str(active_root or ""),
+            "mode": "complete" if active_root is None else "uploading",
+            "modeDetail": mode_detail,
+            "batchNumber": batch_index,
+            "successHistory": history,
+            "codexLive": max(
+                (_count(row.get("publishedLiveTotal")) for _, row in completed),
+                default=0,
+            ),
+            "progressEvidence": mode_detail,
+        }
+
     def _publisher_lane(self, definition: Dict[str, Any]) -> Dict[str, Any]:
+        if definition.get("publicationCampaignGlob"):
+            return self._publication_campaign_lane(definition)
         state_path = self._path(str(definition.get("statePath", "missing.json")))
         state = _read_json(state_path)
         advances = state.get("automaticAdvanceLog")
@@ -1011,6 +1245,23 @@ class SweeperController:
             "work/judah_library/cache/web_sweeper_push_handoffs.json",
         )))
         handoffs = _read_json(handoff_path).get("handoffs", [])
+        if not isinstance(handoffs, list):
+            handoffs = []
+        source_state_value = str(definition.get("stagingSourceStatePath", "")).strip()
+        if source_state_value:
+            source_state = _read_json(self._path(source_state_value))
+            source_root = str(source_state.get("currentRoot") or "")
+            if source_root and not any(
+                isinstance(row, dict) and str(row.get("root") or "") == source_root
+                for row in handoffs
+            ):
+                handoffs = [*handoffs, {
+                    "lane": str(definition.get("stagingSourceLane", "")),
+                    "root": source_root,
+                    "books": _count(source_state.get("acceptedInCurrentBatch")),
+                    "requestedAt": source_state.get("updatedAt", ""),
+                    "action": "follow-authoritative-staging-root",
+                }]
         known_roots = {item["root"] for item in batch_queue}
         if isinstance(handoffs, list):
             for handoff in handoffs:
@@ -1021,10 +1272,20 @@ class SweeperController:
                 # the active publisher card. Its totals belong exclusively in
                 # Success History; retaining it here makes a later push look
                 # cumulative (for example, completed 690 + new 68 = 758).
+                root = Path(root_value) if root_value else None
+                permanent_receipt = (
+                    _read_json(root / "promotion_validation.json")
+                    if root is not None else {}
+                )
+                permanently_verified = (
+                    _count(permanent_receipt.get("published")) > 0
+                    and _count(permanent_receipt.get("liveVerified"))
+                    >= _count(permanent_receipt.get("published"))
+                )
                 if (not root_value or root_value in known_roots
-                        or root_value in completed_roots):
+                        or root_value in completed_roots or permanently_verified):
                     continue
-                root = Path(root_value)
+                assert root is not None
                 receipt = _read_json(root / "staging_upload_receipt.json")
                 verification = _read_json(root / "staging_verification.json")
                 staging_progress = _read_json(root / "staging_upload_progress.json")
@@ -1052,6 +1313,7 @@ class SweeperController:
                     "status": handoff_status,
                     "stageProgressCurrent": staging_uploaded,
                     "stageProgressTarget": staging_target,
+                    "stageProgressUpdatedAt": staging_progress.get("updatedAt", ""),
                     "current": False,
                 })
                 known_roots.add(root_value)
@@ -1072,6 +1334,18 @@ class SweeperController:
                 target = _count(active_staging.get("stageProgressTarget"))
                 phase_count = accepted
                 stage = "staging-upload"
+                uploaded = accepted
+                current_root = str(active_staging.get("root") or "")
+                batch_number = _batch_number(current_root)
+                staging_observed = _timestamp(active_staging.get("stageProgressUpdatedAt"))
+                if staging_observed is not None:
+                    staging_age = (
+                        datetime.now(timezone.utc) - staging_observed
+                    ).total_seconds()
+                    if staging_age <= int(definition.get("watchAfterSeconds", 900)):
+                        health = "healthy"
+                    elif staging_age <= int(definition.get("redAfterSeconds", 3600)):
+                        health = "watch"
             else:
                 handoff_books = sum(_count(item.get("books")) for item in handoff_rows)
                 accepted = handoff_books
@@ -1266,6 +1540,13 @@ class SweeperController:
         return archived
 
     def status(self) -> Dict[str, Any]:
+        # Configuration is operational state: lane visibility and batch
+        # targets must change on the next authoritative UI refresh without a
+        # controller restart. `_read_json` remains inode/mtime cached when the
+        # file is unchanged, so the normal polling path stays inexpensive.
+        refreshed_config = _read_json(self.config_path)
+        if refreshed_config:
+            self.config = refreshed_config
         lanes = [self._lane(item) for item in self.config.get("lanes", []) if isinstance(item, dict)]
         checked_at = datetime.now(timezone.utc)
         metrics = self._metrics()
@@ -1301,29 +1582,54 @@ class SweeperController:
             # while it is handing survivors to staging. Upload activity is an
             # adjustment toward health; it is not acquisition health itself.
             if lane_id != "publisher":
+                terminal_lane = (
+                    str(lane.get("mode", "")).casefold() == "complete"
+                    or any(marker in str(lane.get("stage", "")).casefold() for marker in (
+                        "campaign-complete", "batch-complete", "source-exhausted",
+                    ))
+                )
                 # Current-unit counters reset at every successful handoff. Lane
                 # health must observe the monotonic authoritative acceptance
                 # total or that rollover falsely looks like a regression to 0.
                 accepted = _count(lane.get("authoritativeGrowthCount",
                                            lane.get("acceptedCumulative", lane.get("accepted"))))
                 growth = self._accepted_growth_observations.get(lane_id)
+                current_root = str(lane.get("currentRoot") or "")
                 if growth is None:
+                    active_empty_root = (
+                        str(lane.get("mode", "")).casefold() in {
+                            "acquisition", "discovery", "uploading",
+                        }
+                        and _count(lane.get("accepted")) == 0
+                        and bool(current_root)
+                    )
                     growth = {
                         "accepted": accepted,
+                        "currentRoot": current_root,
                         "lastGrowth": (
-                            _timestamp(lane.get("acceptedUpdatedAt")) if accepted > 0 else None
+                            _timestamp(lane.get("acceptedUpdatedAt"))
+                            if accepted > 0 and not active_empty_root else None
                         ),
                         "observedSince": _timestamp(lane.get("updatedAt")) or checked_at,
+                    }
+                elif str(growth.get("currentRoot") or "") != current_root:
+                    growth = {
+                        "accepted": accepted,
+                        "currentRoot": current_root,
+                        "lastGrowth": None,
+                        "observedSince": checked_at,
                     }
                 elif accepted < _count(growth.get("accepted")):
                     # Quarantine/revocation is an integrity correction, not
                     # accepted-book growth. Preserve the last real increase so
                     # a freshly written rejection cannot turn health green.
                     growth = {"accepted": accepted,
+                              "currentRoot": current_root,
                               "lastGrowth": growth.get("lastGrowth"),
                               "observedSince": growth.get("observedSince", checked_at)}
                 elif accepted > _count(growth.get("accepted")):
-                    growth = {"accepted": accepted, "lastGrowth": checked_at,
+                    growth = {"accepted": accepted, "currentRoot": current_root,
+                              "lastGrowth": checked_at,
                               "observedSince": growth.get("observedSince", checked_at)}
                 self._accepted_growth_observations[lane_id] = growth
                 last_growth = growth.get("lastGrowth")
@@ -1331,7 +1637,9 @@ class SweeperController:
                     last_growth.isoformat().replace("+00:00", "Z")
                     if isinstance(last_growth, datetime) else None
                 )
-                if lane.get("health") != "failed":
+                if terminal_lane or str(lane.get("mode", "")).casefold() == "queued":
+                    lane["health"] = "healthy"
+                elif lane.get("health") != "failed":
                     if not isinstance(last_growth, datetime):
                         observed_since = growth.get("observedSince")
                         no_growth_age = (

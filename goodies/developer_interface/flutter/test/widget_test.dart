@@ -15,6 +15,15 @@ Future<void> pumpAt(WidgetTester tester, Size size) async {
 }
 
 void main() {
+  test('newest refresh response supersedes an older in-flight response', () {
+    final gate = RequestGenerationGate();
+    final periodic = gate.begin();
+    final manual = gate.begin();
+
+    expect(gate.canCommit(periodic), isFalse);
+    expect(gate.canCommit(manual), isTrue);
+  });
+
   test(
     'authoritative stage mapping separates active acquisition, bounded inventory, and idle publisher',
     () {
@@ -72,6 +81,66 @@ void main() {
     final source = Uri.file('lib/main.dart').toFilePath();
     final text = File(source).readAsStringSync();
     expect(text, contains('_connect(quiet: true, forceNetwork: true)'));
+    expect(statusRefreshInterval, const Duration(seconds: 5));
+  });
+
+  test(
+    'acquisition candidate count is rendered against its screening target',
+    () {
+      final model = ModelView.fromJson({
+        'id': 'internet-archive',
+        'name': 'Internet Archive',
+        'stage': 'prepare',
+        'accepted': 12,
+        'target': 3000,
+        'candidateCount': 705,
+        'candidateTarget': 10000,
+        'uploaded': 0,
+        'health': 'healthy',
+        'mode': 'acquisition',
+      });
+      expect(candidateCounterLabel(model), 'Candidates screened: 705 / 10000');
+    },
+  );
+
+  test('terminal cards never acquire a local stuck label', () {
+    final model = ModelView.fromJson({
+      'id': 'internet-archive',
+      'name': 'Internet Archive',
+      'stage': 'campaign-complete',
+      'accepted': 1,
+      'target': 3000,
+      'candidateCount': 705,
+      'candidateTarget': 10000,
+      'uploaded': 1,
+      'health': 'healthy',
+      'mode': 'complete',
+    });
+    expect(isTerminalModel(model), isTrue);
+  });
+
+  test('publisher campaign exposes aggregate live and batch progress', () {
+    const model = ModelView(
+      id: 'publisher',
+      name: 'Stage to Live',
+      stage: 'storage-upload',
+      accepted: 40,
+      target: 100,
+      uploaded: 40,
+      health: Health.healthy,
+      detail: 'publishing',
+      mode: 'uploading',
+      modeDetail: {
+        'campaignLiveVerified': 4996,
+        'campaignBooksTotal': 9773,
+        'campaignBatchesCompleted': 50,
+        'campaignBatchesTotal': 98,
+      },
+    );
+    expect(
+      publisherCampaignLabel(model),
+      'Campaign live: 4996 / 9773 · Batches: 50 / 98',
+    );
   });
 
   test('UI reset retains proven live cards until replacement succeeds', () {
@@ -193,7 +262,7 @@ void main() {
     expect(find.text('Codex Live'), findsOneWidget);
     expect(find.byKey(const ValueKey('refresh-ui-button')), findsOneWidget);
     expect(find.byKey(const ValueKey('workspace-toggle-button')), findsNothing);
-    expect(find.text('Reset UI'), findsOneWidget);
+    expect(find.text('Refresh UI'), findsOneWidget);
     expect(
       tester
           .widget<TextButton>(find.byKey(const ValueKey('refresh-ui-button')))
@@ -632,7 +701,8 @@ void main() {
               target: 1000,
               uploaded: 0,
               health: Health.healthy,
-              detail: 'Retrieval moving · 495/990 books processed · 0 authoritatively accepted',
+              detail:
+                  'Retrieval moving · 495/990 books processed · 0 authoritatively accepted',
             ),
             observation: ProgressObservation(
               progressTenthsPercent: 0,
@@ -649,9 +719,11 @@ void main() {
       ),
     );
     expect(
-      tester.widget<Text>(
-        find.byKey(const ValueKey('pipeline-label-project-puritas')),
-      ).data,
+      tester
+          .widget<Text>(
+            find.byKey(const ValueKey('pipeline-label-project-puritas')),
+          )
+          .data,
       'Pipeline 2/6 · Discover / acquire',
     );
     expect(find.text('0 / 1000'), findsOneWidget);

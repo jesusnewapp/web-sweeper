@@ -11,6 +11,7 @@ const _defaultEndpoint = String.fromEnvironment(
   defaultValue: 'http://127.0.0.1:8790',
 );
 const _webSweeperEndpoint = 'http://127.0.0.1:8790';
+const statusRefreshInterval = Duration(seconds: 5);
 
 void main() => runApp(const WebSweeperDeveloperApp());
 
@@ -107,12 +108,22 @@ class DeveloperDashboard extends StatefulWidget {
   State<DeveloperDashboard> createState() => _DeveloperDashboardState();
 }
 
+class RequestGenerationGate {
+  int _latest = 0;
+
+  int begin() => ++_latest;
+
+  bool canCommit(int generation) => generation == _latest;
+}
+
 class _DeveloperDashboardState extends State<DeveloperDashboard> {
   int _sourceSlots = 4;
   int _selectedSlot = 0;
   bool _tertiary = true;
   bool _bridge = false;
-  bool _connecting = false;
+  int _activeConnections = 0;
+  final RequestGenerationGate _requestGate = RequestGenerationGate();
+  bool get _connecting => _activeConnections > 0;
   bool _resettingUi = false;
   bool _hasLiveData = false;
   int _codexLive = 0;
@@ -186,7 +197,7 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
     _progressTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) _tickObservations();
     });
-    _statusTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+    _statusTimer = Timer.periodic(statusRefreshInterval, (_) {
       // Cold-start failures must heal too. Requiring prior live data here
       // trapped the interface in preview mode after a brief controller outage.
       // Always bypass caches: this timer defines UI health as current live
@@ -283,11 +294,13 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
     bool quiet = false,
     bool resetUiObservations = false,
     bool forceNetwork = false,
+    bool supersedeInFlight = false,
     bool workspaceCorrectionAttempted = false,
   }) async {
-    if (_connecting) return false;
+    if (_connecting && !supersedeInFlight) return false;
+    final requestGeneration = _requestGate.begin();
     setState(() {
-      _connecting = true;
+      _activeConnections += 1;
       if (!quiet) _connectionMessage = 'Connecting…';
     });
     try {
@@ -312,6 +325,7 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
         throw Exception('controller returned ${response.statusCode}');
       }
       final payload = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!_requestGate.canCommit(requestGeneration)) return false;
       final preferences = await SharedPreferences.getInstance();
       const expectedWorkspace = 'web_sweeper';
       final actualWorkspace = payload['workspace'] as String?;
@@ -328,13 +342,13 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
           _endpoint = correctedEndpoint;
           _hasLiveData = false;
           _models = const [];
-          _connecting = false;
           _connectionMessage = 'Correcting controller workspace…';
         });
         return _connect(
           quiet: quiet,
           resetUiObservations: true,
           forceNetwork: true,
+          supersedeInFlight: true,
           workspaceCorrectionAttempted: true,
         );
       }
@@ -385,33 +399,31 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
       });
       return true;
     } catch (error) {
-      if (!mounted) return false;
+      if (!mounted || !_requestGate.canCommit(requestGeneration)) return false;
       setState(() => _connectionMessage = 'Connection failed · $error');
       return false;
     } finally {
-      if (mounted) setState(() => _connecting = false);
+      if (mounted) {
+        setState(() {
+          if (_activeConnections > 0) _activeConnections -= 1;
+        });
+      }
     }
   }
 
   Future<void> _manualRefresh() async {
     if (_resettingUi) return;
     setState(() => _resettingUi = true);
-    // A periodic status read may be in flight when the user presses Reset UI.
-    // Queue behind it instead of disabling/ignoring the button. The request
-    // itself has an eight-second timeout, so this bounded wait cannot hang.
-    for (var attempt = 0; _connecting && attempt < 90; attempt++) {
-      await Future<void>.delayed(const Duration(milliseconds: 100));
-      if (!mounted) return;
-    }
     // Keep the last proven controller snapshot visible until a replacement
     // succeeds. A transient controller restart must never replace live cards
     // with preview lanes or zero counters.
     setState(() {
-      _connectionMessage = 'Resetting UI · loading authoritative status…';
+      _connectionMessage = 'Refreshing UI · loading authoritative status…';
     });
     var refreshed = await _connect(
       resetUiObservations: true,
       forceNetwork: true,
+      supersedeInFlight: true,
     );
     if (!refreshed && mounted) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
@@ -419,6 +431,7 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
         quiet: true,
         resetUiObservations: true,
         forceNetwork: true,
+        supersedeInFlight: true,
       );
     }
     if (!mounted) return;
@@ -428,8 +441,8 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
     final time = TimeOfDay.now().format(context);
     _notice(
       refreshed
-          ? 'UI reset · authoritative status loaded · $time'
-          : 'UI reset · controller unavailable · $time',
+          ? 'UI refreshed · authoritative status loaded · $time'
+          : 'UI refresh · controller unavailable · $time',
     );
     setState(() => _resettingUi = false);
   }
@@ -779,7 +792,7 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.refresh_rounded, size: 19),
-            label: Text(_resettingUi ? 'Resetting…' : 'Reset UI'),
+            label: Text(_resettingUi ? 'Refreshing…' : 'Refresh UI'),
           ),
           const SizedBox(width: 6),
         ],
@@ -1587,6 +1600,7 @@ class ModelView {
     required this.stage,
     required this.accepted,
     this.candidateCount = 0,
+    this.candidateTarget = 0,
     required this.target,
     required this.uploaded,
     required this.health,
@@ -1605,6 +1619,7 @@ class ModelView {
   final String stage;
   final int accepted;
   final int candidateCount;
+  final int candidateTarget;
   final int target;
   final int uploaded;
   final Health health;
@@ -1627,6 +1642,7 @@ class ModelView {
     String? stage,
     int? accepted,
     int? candidateCount,
+    int? candidateTarget,
     int? target,
     int? uploaded,
     Health? health,
@@ -1637,6 +1653,7 @@ class ModelView {
     stage: stage ?? this.stage,
     accepted: accepted ?? this.accepted,
     candidateCount: candidateCount ?? this.candidateCount,
+    candidateTarget: candidateTarget ?? this.candidateTarget,
     target: target ?? this.target,
     uploaded: uploaded ?? this.uploaded,
     health: health ?? this.health,
@@ -1662,6 +1679,14 @@ class ModelView {
           (json['candidateCount'] as num?)?.toInt() ??
           ((json['modeDetail'] is Map
                       ? (json['modeDetail'] as Map)['candidateCount']
+                      : null)
+                  as num?)
+              ?.toInt() ??
+          0,
+      candidateTarget:
+          (json['candidateTarget'] as num?)?.toInt() ??
+          ((json['modeDetail'] is Map
+                      ? (json['modeDetail'] as Map)['candidateTarget']
                       : null)
                   as num?)
               ?.toInt() ??
@@ -2046,6 +2071,36 @@ GatePosition gatePositionFor(ModelView model) {
   return const GatePosition(1, 6);
 }
 
+bool isTerminalModel(ModelView model) {
+  final stage = model.stage.toLowerCase().replaceAll('_', '-');
+  return model.mode.toLowerCase() == 'complete' ||
+      stage.contains('campaign-complete') ||
+      stage.contains('batch-complete') ||
+      stage.contains('source-exhausted');
+}
+
+bool isWaitingModel(ModelView model) => model.mode.toLowerCase() == 'queued';
+
+String candidateCounterLabel(ModelView model) {
+  final suffix = model.candidateTarget > 0 ? ' / ${model.candidateTarget}' : '';
+  return 'Candidates screened: ${model.candidateCount}$suffix';
+}
+
+String? publisherCampaignLabel(ModelView model) {
+  final verified = (model.modeDetail['campaignLiveVerified'] as num?)?.toInt();
+  final books = (model.modeDetail['campaignBooksTotal'] as num?)?.toInt();
+  final completed = (model.modeDetail['campaignBatchesCompleted'] as num?)
+      ?.toInt();
+  final batches = (model.modeDetail['campaignBatchesTotal'] as num?)?.toInt();
+  if (verified == null ||
+      books == null ||
+      completed == null ||
+      batches == null) {
+    return null;
+  }
+  return 'Campaign live: $verified / $books · Batches: $completed / $batches';
+}
+
 class ModelCard extends StatelessWidget {
   const ModelCard({
     super.key,
@@ -2073,6 +2128,8 @@ class ModelCard extends StatelessWidget {
   };
 
   String get modeLabel {
+    if (isTerminalModel(model)) return 'Complete';
+    if (isWaitingModel(model)) return 'Queued';
     if (model.mode.toLowerCase() == 'uploading') return 'Uploading';
     if (model.mode.toLowerCase() == 'acquisition') return 'Acquisition';
     if (model.id == 'publisher') return 'Verification';
@@ -2080,6 +2137,9 @@ class ModelCard extends StatelessWidget {
   }
 
   Color _modeColor(Duration unchangedFor) {
+    if (isTerminalModel(model) || isWaitingModel(model)) {
+      return const Color(0xff35d07f);
+    }
     if (model.mode.toLowerCase() == 'uploading') {
       return const Color(0xff35d07f);
     }
@@ -2096,6 +2156,8 @@ class ModelCard extends StatelessWidget {
   }
 
   String _modeButtonLabel(Duration unchangedFor) {
+    if (isTerminalModel(model)) return 'Complete';
+    if (isWaitingModel(model)) return 'Queued';
     if (model.mode.toLowerCase() == 'uploading') return 'Uploading';
     final age = formatDuration(unchangedFor);
     if (unchangedFor.inSeconds >= 300) return '$modeLabel · stuck $age';
@@ -2594,6 +2656,8 @@ class ModelCard extends StatelessWidget {
     final capacityProtected = normalizedStage.contains('capacity-protected');
     final adapterActive = model.modeDetail['adapterActive'] == true;
     final uiStuck =
+        !isTerminalModel(model) &&
+        !isWaitingModel(model) &&
         !sourceReadyToStage &&
         !capacityProtected &&
         !adapterActive &&
@@ -2982,6 +3046,31 @@ class ModelCard extends StatelessWidget {
               key: ValueKey('primary-counter-${model.id}'),
               style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
             ),
+            if (model.id != 'publisher' && model.candidateTarget > 0) ...[
+              const SizedBox(height: 5),
+              Text(
+                candidateCounterLabel(model),
+                key: ValueKey('candidate-progress-${model.id}'),
+                style: const TextStyle(
+                  color: Color(0xff64dc98),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+            if (model.id == 'publisher' &&
+                publisherCampaignLabel(model) != null) ...[
+              const SizedBox(height: 5),
+              Text(
+                publisherCampaignLabel(model)!,
+                key: const ValueKey('publisher-campaign-progress'),
+                style: const TextStyle(
+                  color: Color(0xff64dc98),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
             if (uiStuck) ...[
               const SizedBox(height: 6),
               Text(
@@ -3127,49 +3216,6 @@ class ModelCard extends StatelessWidget {
                       if (index > 0) const SizedBox(height: 6),
                       _publisherBatchRow(batchQueue[index], index),
                     ],
-                  ],
-                ),
-              ),
-            ],
-            if (model.id != 'publisher') ...[
-              const SizedBox(height: 10),
-              Container(
-                key: ValueKey('candidate-count-${model.id}'),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: const Color(0xff0c2017),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xff28533d)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.library_books_outlined,
-                      size: 16,
-                      color: Color(0xff64dc98),
-                    ),
-                    const SizedBox(width: 7),
-                    const Text(
-                      'CANDIDATES',
-                      style: TextStyle(
-                        color: Color(0xff83a891),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0.6,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      model.candidateCount.toString(),
-                      style: const TextStyle(
-                        color: Color(0xff64dc98),
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
                   ],
                 ),
               ),
