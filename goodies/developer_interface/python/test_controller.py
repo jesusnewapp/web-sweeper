@@ -175,6 +175,42 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(199, lane["modeDetail"]["campaignLiveVerified"])
             self.assertEqual(300, lane["modeDetail"]["campaignBooksTotal"])
 
+    def test_duplicate_only_publication_batch_is_terminal_and_accounted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            batch = root / "work/judah_library/imports/archive_live_batch_001"
+            batch.mkdir(parents=True)
+            (batch / "catalog.json").write_text(json.dumps({
+                "books": [{"id": str(item)} for item in range(100)],
+            }))
+            overlaps = [{"bookId": str(item)} for item in range(100)]
+            (batch / "publication_verification.json").write_text(json.dumps({
+                "prepared": 100, "published": 0, "verified": 0, "expected": 0,
+                "removedLiveOverlaps": overlaps,
+                "verifiedAt": "2026-08-26T22:39:00Z",
+            }))
+            (batch / "publication_progress.json").write_text(json.dumps({
+                "phase": "complete", "prepared": 100, "duplicateRemoved": 100,
+                "published": 0, "liveVerified": 0,
+                "updatedAt": "2026-08-26T22:39:00Z",
+            }))
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "projectRoot": str(root), "lanes": [{
+                    "id": "publisher", "kind": "publisher",
+                    "publicationCampaignGlob":
+                        "work/judah_library/imports/archive_live_batch_*",
+                    "publicationCampaignBooks": 100,
+                }],
+            }))
+
+            lane = SweeperController(config).status()["lanes"][0]
+            self.assertEqual("campaign-complete", lane["stage"])
+            self.assertEqual("healthy", lane["health"])
+            self.assertEqual(1, lane["modeDetail"]["campaignBatchesCompleted"])
+            self.assertEqual(100, lane["modeDetail"]["campaignDuplicatesRemoved"])
+            self.assertEqual(100, lane["modeDetail"]["campaignBooksAccounted"])
+
     def test_status_reloads_lane_configuration_without_controller_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

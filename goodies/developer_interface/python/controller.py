@@ -957,9 +957,21 @@ class SweeperController:
         active_root: Optional[Path] = None
         for root in roots:
             verification = _read_json(root / "publication_verification.json")
+            progress = _publication_progress(root)
+            catalog_count = _count(_read_json(root / "catalog.json").get("books", []))
             published_count = _count(verification.get("published"))
             verified_count = _count(verification.get("verified"))
-            if published_count > 0 and verified_count >= published_count:
+            overlap_count = _count(verification.get("removedLiveOverlaps"))
+            terminal_receipt = (
+                published_count > 0 and verified_count >= published_count
+            ) or (
+                str(progress.get("phase") or "") == "complete"
+                and bool(verification.get("verifiedAt"))
+                and verified_count >= published_count
+                and published_count + overlap_count == catalog_count
+                and catalog_count > 0
+            )
+            if terminal_receipt:
                 completed.append((root, verification))
             elif active_root is None:
                 active_root = root
@@ -968,6 +980,7 @@ class SweeperController:
         campaign_duplicates = sum(
             _count(row.get("removedLiveOverlaps")) for _, row in completed
         )
+        campaign_accounted = campaign_verified + campaign_duplicates
         total_books = _count(definition.get("publicationCampaignBooks")) or sum(
             _count(_read_json(root / "catalog.json").get("books", [])) for root in roots
         )
@@ -1060,6 +1073,7 @@ class SweeperController:
             "campaignLiveVerified": campaign_verified,
             "campaignBooksTotal": total_books,
             "campaignDuplicatesRemoved": campaign_duplicates,
+            "campaignBooksAccounted": campaign_accounted,
             "completionState": "published" if active_root is None else "",
             "writerSerialized": True,
             "currentRoot": str(active_root or ""),
@@ -1076,6 +1090,11 @@ class SweeperController:
             "liveVerified": campaign_verified,
             "health": health,
             "detail": (
+                f"Campaign complete: {campaign_verified} live-verified + "
+                f"{campaign_duplicates} overlaps = {campaign_accounted}/{total_books} accounted · "
+                f"batch {batch_index}/{total_batches} · "
+                f"{campaign_duplicates} duplicates safely removed"
+                if active_root is None else
                 f"Campaign {campaign_verified}/{total_books} live-verified · "
                 f"batch {batch_index}/{total_batches} · "
                 f"{campaign_duplicates} duplicates safely removed"
