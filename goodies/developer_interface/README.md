@@ -87,6 +87,12 @@ down its child cleanly.
 - Acquisition health is based only on monotonic authoritative accepted growth.
   Retrieved, screened, attempted, and heartbeat counts remain useful diagnostics,
   but cannot label a stagnant lane healthy.
+- An active Opti review adapter remains authoritative even when its current root
+  has an older staging or live-verification receipt. The receipt stays in Success
+  History while the operating card shows the active journal count, review stage,
+  candidate remainder, and accepted-growth time.
+- Timestamp precedence is explicit: stale staging progress cannot replace a newer
+  acquisition state after a source-bound closeout or recovery.
 - Inactivity is multi-signal: accepted, discovery-page/cursor, candidate-inventory,
   stage, upload, publication, verification, checkpoint timestamp, and receipt
   movement all count. A quiet accepted counter cannot terminate active discovery.

@@ -315,6 +315,10 @@ class SweeperController:
             return self._publisher_lane(definition)
         state_path = self._path(str(definition.get("statePath", "missing.json")))
         state = _read_json(state_path)
+        active_review = (
+            str(state.get("status", "")).casefold() == "running"
+            and _count(state.get("reviewTotal")) > 0
+        )
         current_root = _first(state, ("currentRoot", "root"), "")
         lane_id = str(definition.get("id", definition.get("name", "lane")))
         batch_number = _count(state.get("currentBatch")) or _batch_number(current_root)
@@ -326,6 +330,21 @@ class SweeperController:
         checkpoint = _read_json(checkpoint_path) if checkpoint_path else {}
         progress = _read_json(Path(current_root) / "staging_upload_progress.json") if current_root else {}
         state_stage = str(_first(state, ("stage", "status"), "inactive"))
+        progress_phase = str(progress.get("phase", ""))
+        state_precedence_time = _timestamp(_first(
+            state, ("updatedAt", "checkpointTimestamp"), ""
+        ))
+        progress_precedence_time = _timestamp(_first(
+            progress, ("updatedAt", "checkpointTimestamp"), ""
+        ))
+        progress_is_current = bool(
+            progress_phase
+            and progress_phase != "complete"
+            and progress_precedence_time is not None
+            and (state_precedence_time is None
+                 or progress_precedence_time >= state_precedence_time)
+            and (datetime.now(timezone.utc) - progress_precedence_time).total_seconds() <= 300
+        )
         accepted = _count(
             _first(
                 checkpoint,
@@ -337,12 +356,17 @@ class SweeperController:
                 ),
             )
         )
+        if active_review:
+            # Review adapters keep the current authoritative membership in
+            # state while acceptedInCurrentBatch may still describe the last
+            # frozen/staged unit referenced by currentRoot.
+            accepted = _count(state.get("accepted"))
         # A resumed worker can reuse the same root while rebuilding its current
         # membership.  During active acquisition/validation the checkpoint is
         # the previous completed snapshot, so the authoritative live counter
         # must come from state/journal until staging creates a new receipt.
         active_stage = state_stage.casefold()
-        if (not progress.get("phase") and (any(marker in active_stage for marker in (
+        if (not progress_is_current and (any(marker in active_stage for marker in (
                 "acquisition-running", "validation-running", "retrieval-running"))
                 or active_stage in {"prepare", "discovery", "initialize"})):
             accepted = _count(_first(
@@ -369,21 +393,20 @@ class SweeperController:
             )
             accepted = max(accepted, journal_accepted)
         if (current_root and checkpoint_path is not None and not checkpoint_path.exists()
-                and journal_accepted == 0):
+                and journal_accepted == 0 and not active_review):
             # A newly advanced batch has no accepted membership yet. Never
             # carry the completed prior batch's reconciliation count into it.
             accepted = 0
         target = int(_first(state, ("currentBatchSize", "batchSize", "target"), definition.get("target", 0)) or 0)
         uploaded = int(_first(progress, ("uploaded", "uploadedCount", "verified"), 0) or 0)
         display_uploaded = uploaded
-        progress_phase = str(progress.get("phase", ""))
         progress_total = int(progress.get("total") or accepted or target)
         staged_complete = bool(
             progress_phase == "complete"
             and uploaded > 0
             and uploaded >= progress_total
         )
-        stage = progress_phase if progress_phase and progress_phase != "complete" else state_stage
+        stage = progress_phase if progress_is_current else state_stage
         state_updated = _first(
             checkpoint,
             ("updatedAt", "checkpointTimestamp", "lastUpdated"),
@@ -416,12 +439,7 @@ class SweeperController:
         observed = max(observed_candidates) if observed_candidates else None
         updated = observed.isoformat().replace("+00:00", "Z") if observed else state_updated
         age = (datetime.now(timezone.utc) - observed).total_seconds() if observed else None
-        progress_active = bool(
-            progress_phase
-            and progress_phase != "complete"
-            and age is not None
-            and age <= 300
-        )
+        progress_active = progress_is_current
         state_status = str(state.get("status", "")).lower()
         configured_queued = bool(definition.get("queued")) and state_status != "running"
         terminal = (
@@ -474,6 +492,17 @@ class SweeperController:
             "published-and-five-gate-verified",
             "already-live-and-five-gate-accounted",
         }
+        protected_prior_accepted = 0
+        active_review_accepted = accepted
+        if active_review and staged_custody > 0:
+            protected_prior_accepted = max(
+                staged_custody,
+                _count(state.get("acceptedInCurrentBatch")),
+                _count(state.get("handoffAccepted")),
+                _count(state.get("preservedAccepted")),
+            )
+            active_review_accepted = max(0, accepted - protected_prior_accepted)
+            display_accepted = active_review_accepted
         if permanent_live_receipt:
             # A durable promotion receipt retires the transient handoff.  Keep
             # the ledger for history, but never let it hold the source card in
@@ -493,7 +522,7 @@ class SweeperController:
             display_accepted = staged_custody
             display_target = _count(definition.get("target")) or target
             detail = f"{staged_custody} accepted books protected · publisher custody"
-        elif staged_custody > 0 and permanent_live_receipt:
+        elif staged_custody > 0 and permanent_live_receipt and not active_review:
             already_live = max(0, staged_custody - live_custody)
             # A completed unit belongs in immutable Success History, not in
             # the active card. The operating card now represents only the
@@ -562,7 +591,8 @@ class SweeperController:
             "handoffBooks": _count(pending_handoff.get("books"))
             if pending_handoff is not None else 0,
             "custodyStage": (
-                "live-verified" if permanent_live_receipt
+                "acquisition" if active_review
+                else "live-verified" if permanent_live_receipt
                 else "publisher" if staged_custody > 0
                 else "staging" if pending_handoff is not None
                 else "acquisition"
@@ -575,8 +605,14 @@ class SweeperController:
             "uploadUpdatedAt": progress_updated,
             **supplemental_detail,
         }
+        if active_review:
+            mode_detail.update({
+                "protectedPriorAccepted": protected_prior_accepted,
+                "reviewAcceptedCumulative": accepted,
+                "accepted": active_review_accepted,
+            })
         review_total = _count(state.get("reviewTotal"))
-        if review_total and not permanent_live_receipt:
+        if review_total and active_review:
             review_processed = _count(state.get("reviewProcessed"))
             review_remaining = max(0, review_total - review_processed)
             adapter_times = [
@@ -610,7 +646,8 @@ class SweeperController:
             detail = (
                 f"Review {'moving' if adapter_active else 'awaiting retry'} · "
                 f"{review_processed}/{review_total} processed · {review_remaining} candidates remaining · "
-                f"{accepted} authoritatively accepted"
+                f"{active_review_accepted} newly accepted · "
+                f"{protected_prior_accepted} protected from the prior unit"
             )
         if stage.casefold() == "ready-for-next-batch":
             if str(state.get("nextStage", "")).casefold() == "source-exhausted":
@@ -786,7 +823,7 @@ class SweeperController:
         exhausted_source = bool(
             acceptance_rate is not None and acceptance_rate < 1.0
         )
-        accepted_evidence = [journal_observed]
+        accepted_evidence = [journal_observed, _timestamp(state.get("lastGrowthAt"))]
         accepted_evidence.extend(_timestamp(item.get("completedAt")) for item in success_history)
         accepted_evidence = [value for value in accepted_evidence if value is not None]
         accepted_updated_at = (

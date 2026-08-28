@@ -5,15 +5,16 @@
   "codexLive": 0,
   "lanes": [
     {
-      "id": "source-one",
-      "name": "Source lane one",
+      "id": "public-source-opti",
+      "name": "Public Source Opti",
       "statePath": "work/source-one/state.json",
       "navigationPath": "work/source-one/navigation-query.json",
-      "target": 2000,
+      "target": 20000,
+      "candidateTarget": 20000,
       "displayCumulativeProgress": true,
-      "watchAfterSeconds": 900,
-      "redAfterSeconds": 3600,
-      "detail": "Configure this lane for an authorized public source"
+      "watchAfterSeconds": 120,
+      "redAfterSeconds": 900,
+      "detail": "200-point optimized public-source acquisition; checkpoint-preserving and staging-only"
     },
     {
       "id": "source-two",

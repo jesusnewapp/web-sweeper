@@ -349,6 +349,49 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual("live-verified", lane["modeDetail"]["custodyStage"])
             self.assertIn("1 duplicate was already live", lane["detail"])
 
+    def test_active_review_is_not_hidden_by_previous_unit_promotion_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unit = root / "work/judah_library/imports/tcp_unit_001"
+            unit.mkdir(parents=True)
+            (unit / "staging_upload_receipt.json").write_text(json.dumps({
+                "staged": 9709, "productionMutated": False,
+            }))
+            (unit / "promotion_validation.json").write_text(json.dumps({
+                "status": "published-and-five-gate-verified",
+                "published": 431, "liveVerified": 431,
+            }))
+            (root / "state.json").write_text(json.dumps({
+                "status": "running",
+                "stage": "item-rights-and-source-screening",
+                "currentRoot": str(unit),
+                "accepted": 9740,
+                "acceptedInCurrentBatch": 9709,
+                "reviewTotal": 20000,
+                "reviewProcessed": 10740,
+                "reviewRemaining": 9260,
+                "candidateCount": 9260,
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+                "heartbeatAt": datetime.now(timezone.utc).isoformat(),
+                "lastGrowthAt": datetime.now(timezone.utc).isoformat(),
+            }))
+            config = root / "config.json"
+            config.write_text(json.dumps({
+                "projectRoot": str(root), "lanes": [{
+                    "id": "tcp-opti", "statePath": "state.json",
+                    "target": 20000,
+                }],
+            }))
+            lane = SweeperController(config).status()["lanes"][0]
+            self.assertEqual("item-rights-and-source-screening", lane["stage"])
+            self.assertEqual(31, lane["accepted"])
+            self.assertEqual("acquisition", lane["mode"])
+            self.assertEqual("healthy", lane["health"])
+            self.assertIn("10740/20000 processed", lane["detail"])
+            self.assertIn("31 newly accepted", lane["detail"])
+            self.assertEqual(9709, lane["modeDetail"]["protectedPriorAccepted"])
+            self.assertEqual(9740, lane["modeDetail"]["reviewAcceptedCumulative"])
+
     def test_retired_open_library_receipts_remain_in_archived_source_history(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -902,6 +945,38 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(lane["mode"], "uploading")
             self.assertEqual(lane["health"], "watch")
             self.assertIsNone(lane["acceptedGrowthSince"])
+
+    def test_newer_active_acquisition_state_overrides_stale_staging_progress(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            unit = root / "unit_001"
+            unit.mkdir()
+            old = "2026-01-01T00:00:00Z"
+            current = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            (unit / "staging_upload_progress.json").write_text(json.dumps({
+                "phase": "fresh-staging-delta", "total": 7, "updatedAt": old,
+            }))
+            (unit / "checkpoint.json").write_text(json.dumps({"acceptedCount": 7}))
+            with (unit / "progress.jsonl").open("w") as journal:
+                for index in range(11):
+                    journal.write(json.dumps({
+                        "kind": "accepted", "id": f"loc-{index}",
+                    }) + "\n")
+            state = root / "state.json"
+            state.write_text(json.dumps({
+                "status": "running", "stage": "prepare", "currentRoot": str(unit),
+                "currentBatchSize": 3000, "acceptedInCurrentBatch": 11,
+                "updatedAt": current,
+            }))
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps({
+                "projectRoot": str(root),
+                "lanes": [{"id": "loc", "statePath": "state.json"}],
+            }))
+            lane = SweeperController(config_path).status()["lanes"][0]
+            self.assertEqual("acquisition", lane["mode"])
+            self.assertEqual("prepare", lane["stage"])
+            self.assertEqual(11, lane["accepted"])
 
     def test_status_uses_newer_authoritative_accepted_journal_count(self):
         with tempfile.TemporaryDirectory() as temporary:
