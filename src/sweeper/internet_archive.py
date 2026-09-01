@@ -14,7 +14,7 @@ import urllib.error
 from urllib.parse import urlencode
 
 
-SEARCH_ENDPOINT = "https://archive.org/advancedsearch.php"
+SEARCH_ENDPOINT = "https://archive.org/services/search/v1/scrape"
 
 
 def _validate_partition(modulus: int, buckets: FrozenSet[int]) -> None:
@@ -103,14 +103,13 @@ class DiscoveryReport:
 
 
 def build_search_url(query: ArchiveQuery, cursor: Optional[str] = None) -> str:
-    parameters: list[tuple[str, str]] = [("q", query.query), ("output", "json")]
-    parameters.extend(("fl[]", field) for field in query.fields)
-    parameters.extend(("sort[]", value) for value in query.sort)
-    parameters.append(("rows", str(query.rows)))
-    if cursor is not None and cursor.isdigit():
-        parameters.append(("page", cursor))
-    elif cursor is not None:
-        parameters.append(("cursorMark", cursor))
+    parameters: list[tuple[str, str]] = [
+        ("q", query.query),
+        ("fields", ",".join(query.fields)),
+        ("count", str(query.rows)),
+    ]
+    if cursor is not None:
+        parameters.append(("cursor", cursor))
     return f"{SEARCH_ENDPOINT}?{urlencode(parameters)}"
 
 
@@ -126,7 +125,11 @@ def parse_search_page(payload: bytes) -> ArchiveSearchPage:
         raw = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("Archive response is not valid JSON") from error
-    response = raw.get("response") if isinstance(raw, dict) else None
+    if not isinstance(raw, dict):
+        raise ValueError("Archive response is missing response.docs")
+    response = raw.get("response")
+    if isinstance(raw.get("items"), list):
+        response = {"docs": raw["items"], "numFound": raw.get("total", len(raw["items"]))}
     if not isinstance(response, dict) or not isinstance(response.get("docs"), list):
         raise ValueError("Archive response is missing response.docs")
     records = []
@@ -145,7 +148,7 @@ def parse_search_page(payload: bytes) -> ArchiveSearchPage:
         num_found = int(response.get("numFound", len(records)))
     except (TypeError, ValueError) as error:
         raise ValueError("Archive response has invalid numFound") from error
-    next_cursor = raw.get("nextCursorMark")
+    next_cursor = raw.get("cursor", raw.get("nextCursorMark"))
     if next_cursor is not None and not isinstance(next_cursor, str):
         raise ValueError("Archive response has invalid nextCursorMark")
     return ArchiveSearchPage(tuple(records), next_cursor, num_found)
@@ -219,7 +222,7 @@ def discover_archive(config: ArchiveDiscoveryConfig, *, opener=urllib.request.ur
                                str(frontier["completedReason"]),
                                frontier.get("nextCursor"))
 
-    cursor = frontier.get("nextCursor") or "1"
+    cursor = frontier.get("nextCursor")
     while int(frontier["screenedOwned"]) < config.max_candidates:
         url = build_search_url(config.query, cursor)
         request = urllib.request.Request(url, headers={"User-Agent": config.user_agent})
@@ -260,9 +263,6 @@ def discover_archive(config: ArchiveDiscoveryConfig, *, opener=urllib.request.ur
         })
         frontier["checkpoints"] = checkpoint_number
         derived_next = page.next_cursor
-        if (derived_next is None and cursor.isdigit() and page.records and
-                int(frontier["screenedSource"]) < page.num_found):
-            derived_next = str(int(cursor) + 1)
         frontier["nextCursor"] = derived_next
         if frontier["screenedOwned"] >= config.max_candidates:
             frontier["completedReason"] = "candidate-ceiling"
