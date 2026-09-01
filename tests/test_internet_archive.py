@@ -60,13 +60,12 @@ def test_search_url_preserves_identity_only_contract_and_cursor():
 
     assert parsed.scheme == "https"
     assert parsed.netloc == "archive.org"
-    assert parsed.path == "/advancedsearch.php"
+    assert parsed.path == "/services/search/v1/scrape"
     assert values["q"] == ["mediatype:texts AND language:eng"]
-    assert values["fl[]"] == ["identifier", "title", "creator"]
-    assert values["sort[]"] == ["identifier asc"]
-    assert values["rows"] == ["500"]
-    assert values["cursorMark"] == ["W3siaWRlbnRpZmllciI6ImFiYyJ9XQ=="]
-    assert values["output"] == ["json"]
+    assert values["fields"] == ["identifier,title,creator"]
+    assert "sorts" not in values
+    assert values["count"] == ["500"]
+    assert values["cursor"] == ["W3siaWRlbnRpZmllciI6ImFiYyJ9XQ=="]
 
 
 def test_search_query_rejects_unsafe_page_size_and_unstable_sort():
@@ -153,7 +152,7 @@ def test_discovery_counts_candidate_ceiling_after_partition(tmp_path):
     assert [record["identifier"] for record in records] == ["book1", "book2"]
 
 
-def test_discovery_starts_archive_page_paging_at_one(tmp_path):
+def test_discovery_starts_scraping_api_without_a_cursor(tmp_path):
     calls = []
 
     def opener(request, timeout=0):
@@ -172,7 +171,7 @@ def test_discovery_starts_archive_page_paging_at_one(tmp_path):
 
     discover_archive(config, opener=opener, sleeper=lambda _: None)
 
-    assert calls[0]["page"] == ["1"]
+    assert "cursor" not in calls[0]
 
 
 def test_discovery_resume_verifies_receipts_and_does_not_rescan(tmp_path):
