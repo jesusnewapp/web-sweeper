@@ -153,6 +153,28 @@ def test_discovery_counts_candidate_ceiling_after_partition(tmp_path):
     assert [record["identifier"] for record in records] == ["book1", "book2"]
 
 
+def test_discovery_starts_archive_page_paging_at_one(tmp_path):
+    calls = []
+
+    def opener(request, timeout=0):
+        calls.append(parse_qs(urlparse(request.full_url).query))
+        return io.BytesIO(_page([{"identifier": "book1"}], None))
+
+    config = ArchiveDiscoveryConfig(
+        query=ArchiveQuery("mediatype:texts", ("identifier",),
+                           ("identifier asc",), 500),
+        modulus=7,
+        buckets=frozenset(range(5)),
+        max_candidates=1,
+        requests_per_second=10,
+        checkpoint_root=tmp_path,
+    )
+
+    discover_archive(config, opener=opener, sleeper=lambda _: None)
+
+    assert calls[0]["page"] == ["1"]
+
+
 def test_discovery_resume_verifies_receipts_and_does_not_rescan(tmp_path):
     response = _page([{"identifier": "book1", "title": "owned"}], None)
     config = ArchiveDiscoveryConfig(

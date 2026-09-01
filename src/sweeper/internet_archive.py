@@ -107,7 +107,9 @@ def build_search_url(query: ArchiveQuery, cursor: Optional[str] = None) -> str:
     parameters.extend(("fl[]", field) for field in query.fields)
     parameters.extend(("sort[]", value) for value in query.sort)
     parameters.append(("rows", str(query.rows)))
-    if cursor is not None:
+    if cursor is not None and cursor.isdigit():
+        parameters.append(("page", cursor))
+    elif cursor is not None:
         parameters.append(("cursorMark", cursor))
     return f"{SEARCH_ENDPOINT}?{urlencode(parameters)}"
 
@@ -217,7 +219,7 @@ def discover_archive(config: ArchiveDiscoveryConfig, *, opener=urllib.request.ur
                                str(frontier["completedReason"]),
                                frontier.get("nextCursor"))
 
-    cursor = frontier.get("nextCursor")
+    cursor = frontier.get("nextCursor") or "1"
     while int(frontier["screenedOwned"]) < config.max_candidates:
         url = build_search_url(config.query, cursor)
         request = urllib.request.Request(url, headers={"User-Agent": config.user_agent})
@@ -257,10 +259,14 @@ def discover_archive(config: ArchiveDiscoveryConfig, *, opener=urllib.request.ur
             "ownedRecords": len(owned),
         })
         frontier["checkpoints"] = checkpoint_number
-        frontier["nextCursor"] = page.next_cursor
+        derived_next = page.next_cursor
+        if (derived_next is None and cursor.isdigit() and page.records and
+                int(frontier["screenedSource"]) < page.num_found):
+            derived_next = str(int(cursor) + 1)
+        frontier["nextCursor"] = derived_next
         if frontier["screenedOwned"] >= config.max_candidates:
             frontier["completedReason"] = "candidate-ceiling"
-        elif page.next_cursor is None or page.next_cursor == cursor:
+        elif derived_next is None or derived_next == cursor:
             frontier["completedReason"] = "source-exhausted"
         _atomic_json(frontier_path, frontier)
         if progress:
@@ -271,7 +277,7 @@ def discover_archive(config: ArchiveDiscoveryConfig, *, opener=urllib.request.ur
                                      frontier.get("nextCursor")))
         if frontier["completedReason"]:
             break
-        cursor = page.next_cursor
+        cursor = derived_next
         sleeper(1.0 / config.requests_per_second)
     return DiscoveryReport(int(frontier["screenedSource"]),
                            int(frontier["screenedOwned"]),
