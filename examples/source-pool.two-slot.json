@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "profile": "two-instance-model-one-continuous",
+  "source_slot_count": 2,
+  "automatic_cross_source_transition": false,
+  "source_slots": [
+    {
+      "slot": 1,
+      "id": "open-library-model-one-primary",
+      "mode": "continuous-same-source-restart",
+      "acquisition_target": 2000,
+      "workers": 2,
+      "minimum_free_gib": 1,
+      "launch_command": ["REPLACE_WITH_OPEN_LIBRARY_DIRECT_DOWNLOAD_ADAPTER"],
+      "query_profile": "broad-christian",
+      "continuation_namespace": "model-one-primary",
+      "shared_duplicate_evidence": true,
+      "allow_partial_on_exhaustion": true
+    },
+    {
+      "slot": 2,
+      "id": "open-library-model-one-parallel",
+      "mode": "continuous-same-source-restart",
+      "acquisition_target": 2000,
+      "workers": 2,
+      "minimum_free_gib": 1,
+      "launch_command": ["REPLACE_WITH_OPEN_LIBRARY_DIRECT_DOWNLOAD_ADAPTER"],
+      "query_profile": "broad-christian",
+      "continuation_namespace": "model-one-parallel",
+      "shared_duplicate_evidence": true,
+      "allow_partial_on_exhaustion": true
+    }
+  ],
+  "restart_policy": {
+    "after_exact_staging_receipt": "restart-same-source-from-next-checkpoint",
+    "confirm_prior_child_dead": true,
+    "prevent_overlap": true,
+    "preserve_checkpoints_and_receipts": true
+  },
+  "parallel_deduplication": {
+    "lane_checkpoints_are_isolated": true,
+    "accepted_staged_live_identities_are_shared": true,
+    "same_offset_requires_atomic_candidate_claims": true,
+    "default_without_claim_ledger": "distinct-deterministic-discovery-partitions"
+  },
+  "publication_policy": {
+    "separate_from_acquisition": true,
+    "one_serialized_writer": true,
+    "auto_restart_after_live_verification": true,
+    "largest_exact_units_first": true,
+    "minimum_cycle_books_when_available": 500
+  }
+}

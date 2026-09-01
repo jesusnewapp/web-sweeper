@@ -21,6 +21,7 @@ from .model import Candidate, Config, Policy, Source
 from .state import State
 from .nurture import preserve
 from .activity import record as activity_record
+from .frontier import FrontierRetirement
 
 
 def now() -> str:
@@ -162,21 +163,37 @@ def run(config: Config, progress: Optional[Callable[[dict], None]] = None) -> di
     config.workspace.mkdir(parents=True, exist_ok=True)
     activity_record(config.workspace,"cycle-start",detail={"project":config.project_name})
     state = State(config.workspace / "state.sqlite3")
+    frontiers = FrontierRetirement(config.workspace)
     source_errors = []
     continuation = []
+    batch_transitions = []
+    frontier_advances = []
     breathing = []
     try:
         # The planner reorders only whole source turns. It never changes item policy,
         # accepted membership, or an in-progress manifest checkpoint.
         ordered = prioritized_sources(config, state)
         for source in ordered:
+            accepted_at_cycle_start = state.accepted_count(source.id)
+            batch_complete = False
+            activity_record(config.workspace, "source-batch-start", lane=source.id,
+                status="working", detail={"batchSize": source.batch_size,
+                    "acceptedAtStart": accepted_at_cycle_start,
+                    "productionWriterTouched": False})
             base_delay = 1.0 / source.requests_per_second
             active_delay = base_delay
             if progress:
                 progress({"phase": "source", "source": source.id})
             manifests = [source.manifest, *source.continuation_manifests]
             for manifest_index, manifest in enumerate(manifests):
+                if frontiers.is_retired(source.id, manifest):
+                    activity_record(config.workspace, "source-frontier-retired-skip",
+                        lane=source.id, status="rotate-next-frontier", detail={
+                            "manifest": manifest, "continuationManifest": manifest_index,
+                            "acceptedArtifactsChanged": False})
+                    continue
                 active_source = replace(source, manifest=manifest)
+                frontier_exhausted = False
                 try:
                     for item in candidates(active_source, config.user_agent):
                         if state.status(item.source_id, item.item_id) in {"accepted", "rejected", "duplicate"}:
@@ -186,6 +203,9 @@ def run(config: Config, progress: Optional[Callable[[dict], None]] = None) -> di
                                       "continuationManifest": manifest_index})
                         retrieve(item, active_source, config, state)
                         outcome = state.status(item.source_id, item.item_id)
+                        accepted_this_batch = (
+                            state.accepted_count(source.id) - accepted_at_cycle_start
+                        )
                         if outcome == "failed":
                             active_delay = min(base_delay * 8, active_delay * 1.5)
                             mode = "exhale-reduce-pressure"
@@ -197,6 +217,11 @@ def run(config: Config, progress: Optional[Callable[[dict], None]] = None) -> di
                             "integrityGatesChanged": False})
                         if len(breathing) > 100: del breathing[:-100]
                         time.sleep(active_delay)
+                        if accepted_this_batch >= source.batch_size:
+                            batch_complete = True
+                            break
+                    else:
+                        frontier_exhausted = True
                 except Exception as error:
                     source_errors.append({"source": source.id, "manifest": manifest,
                         "error": f"{type(error).__name__}: {error}"})
@@ -206,9 +231,56 @@ def run(config: Config, progress: Optional[Callable[[dict], None]] = None) -> di
                         progress({"phase": "source-error", "source": source.id,
                                   "manifest": manifest, "error": source_errors[-1]["error"]})
                     continue
+                if frontier_exhausted:
+                    retired = frontiers.retire(source.id, manifest)
+                    rotation = frontiers.rotation_status(source.id, manifests)
+                    frontier_advances.append({
+                        "source": source.id, "exhaustedFrontierIndex": manifest_index,
+                        "exhaustedFrontier": manifest,
+                        "acceptedSurvivors": state.accepted_count(source.id) - accepted_at_cycle_start,
+                        "action": ("advance-next-configured-frontier"
+                                   if not rotation["sourceFrontierExhausted"]
+                                   else "handoff-survivors-and-discover-next-frontier"),
+                        **rotation,
+                    })
+                    activity_record(config.workspace, "source-frontier-retired",
+                        lane=source.id, status="rotate-next-frontier", detail={
+                            **retired, "continuationManifest": manifest_index,
+                            "nextAction": frontier_advances[-1]["action"],
+                            "sourceFrontierExhausted": rotation["sourceFrontierExhausted"]})
+                if batch_complete:
+                    break
                 if source.target_items and state.accepted_count(source.id) >= source.target_items:
                     break
             accepted = state.accepted_count(source.id)
+            accepted_this_batch = accepted - accepted_at_cycle_start
+            rotation = frontiers.rotation_status(source.id, manifests)
+            target_reached = bool(source.target_items and accepted >= source.target_items)
+            close_reason = ("accepted-target-filled" if batch_complete else
+                            "configured-source-frontier-exhausted"
+                            if rotation["sourceFrontierExhausted"] else
+                            "operator-target-reached" if target_reached else
+                            "continuation-frontier-available")
+            batch_transitions.append({
+                "source": source.id, "requested": source.batch_size,
+                "acceptedSurvivors": accepted_this_batch,
+                "closeReason": close_reason,
+                "handoffAction": "stage-exact-valid-survivors" if accepted_this_batch else "record-zero-survivor-unit",
+                "nextAction": ("immediate-next-batch-from-checkpoint" if batch_complete else
+                               "advance-next-configured-frontier" if rotation["nextFrontier"] else
+                               "discover-or-configure-next-frontier"),
+                "automaticAdvance": True,
+                **rotation,
+            })
+            activity_record(config.workspace, "source-batch-complete", lane=source.id,
+                status="advance-next-batch" if batch_complete else "source-frontier-reached",
+                detail={"batchSize": source.batch_size,
+                    "acceptedThisBatch": accepted_this_batch,
+                    "acceptedTotal": accepted,
+                    "batchFilled": batch_complete,
+                    "closeReason": close_reason,
+                    "nextAction": batch_transitions[-1]["nextAction"],
+                    "productionWriterTouched": False})
             if source.target_items and accepted < source.target_items:
                 continuation.append({"source": source.id, "accepted": accepted,
                     "target": source.target_items, "deficit": source.target_items - accepted,
@@ -251,10 +323,13 @@ def run(config: Config, progress: Optional[Callable[[dict], None]] = None) -> di
             "accepted",config.nurture_threshold) if accepted_items else {"active":False,"members":0,
                 "threshold":config.nurture_threshold}
         result={"completedAt": now(), "counts": state.counts(), "workspace": str(config.workspace),
+                "batchCeilingItems": 1_000,
                 "sweeperBlocked": False,
                 "failureDisposition": "bookkeep-item-or-source-and-continue",
                 "sourceErrors": source_errors, "continuation": continuation,
                 "continuationRequired": bool(continuation), "breathing": breathing,
+                "batchTransitions": batch_transitions,
+                "frontierAdvances": frontier_advances,
                 "continuationPlan": str(plan_path), "forecastHistory": str(history_path),
                 "nurture":nurture}
         activity_record(config.workspace,"cycle-complete",status="continuing",detail={

@@ -1,6 +1,6 @@
 # Translator runtime and download options
 
-Sweeper V2 contains a vendor-neutral translation bridge and Translator Sweeper
+Web Sweeper contains a vendor-neutral translation bridge and Translator Sweeper
 orchestration. It does **not** bundle translation model weights. Keeping the
 runtime separate makes the core small, lets operators choose licenses and
 hardware deliberately, and prevents a model download from silently consuming
@@ -145,7 +145,7 @@ technical checks, not linguistic approval.
 
 ## Translator Sweeper staging contract
 
-Public Sweeper V2 keeps Firebase or another database behind an explicit adapter.
+Public Web Sweeper keeps Firebase or another database behind an explicit adapter.
 Configure a separate translation staging collection and independent commands:
 
 The generated `REPLACE_WITH_YOUR_TRANSLATION_STAGING_COLLECTION` value is a
@@ -180,4 +180,4 @@ publish concurrently or bypass live verification.
 5. Test separate translation staging with a no-live-write adapter.
 6. Rehearse the shared uploader handoff and exact deployment verification.
 7. Increase batch size only after measuring quality, throughput, storage, and
-   recovery behavior.
+   recovery behavior. The public item ceiling is 1,000 per batch.

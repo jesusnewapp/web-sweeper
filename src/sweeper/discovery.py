@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import http.client
+import socket
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -17,6 +21,32 @@ DEFAULT_CATEGORIES = (
     "open geospatial data archives", "open research software archives",
 )
 
+TRANSIENT_NETWORK_ERRORS = (
+    urllib.error.URLError,
+    TimeoutError,
+    socket.timeout,
+    http.client.IncompleteRead,
+    ConnectionResetError,
+    BrokenPipeError,
+)
+
+
+def _read_rss(request: urllib.request.Request, *, retries: int = 5,
+              timeout_seconds: int = 60) -> bytes:
+    """Read one discovery feed with bounded transient-failure retries."""
+    attempts = max(1, retries)
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                return response.read(2_000_000)
+        except TRANSIENT_NETWORK_ERRORS as error:
+            last_error = error
+            if attempt + 1 < attempts:
+                time.sleep(min(16.0, 2.0 ** attempt))
+    assert last_error is not None
+    raise last_error
+
 
 def discover(categories: list[str], output: Path, user_agent: str,
              results_per_category: int = 20) -> dict:
@@ -28,8 +58,7 @@ def discover(categories: list[str], output: Path, user_agent: str,
         url = "https://www.bing.com/search?format=rss&q=" + urllib.parse.quote(category)
         request = urllib.request.Request(url, headers={"User-Agent": user_agent})
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                root = ET.fromstring(response.read(2_000_000))
+            root = ET.fromstring(_read_rss(request))
             for item in root.findall(".//item")[:results_per_category]:
                 link = (item.findtext("link") or "").strip()
                 title = (item.findtext("title") or "").strip()

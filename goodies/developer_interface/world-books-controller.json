@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "projectRoot": ".",
+  "metricsPath": "work/world_books/controller-metrics.json",
+  "codexLive": 0,
+  "lanes": [
+    {
+      "id": "internet-archive-french",
+      "name": "Internet Archive · French World",
+      "statePath": "work/world_books/internet_archive_french/state.json",
+      "target": 2000,
+      "watchAfterSeconds": 900,
+      "redAfterSeconds": 3600,
+      "detail": "Complete French Christian text artifacts translated directly into English review manuscripts"
+    },
+    {
+      "id": "europeana-french",
+      "name": "Europeana · French World",
+      "statePath": "work/world_books/europeana_french/state.json",
+      "target": 2000,
+      "watchAfterSeconds": 900,
+      "redAfterSeconds": 3600,
+      "detail": "Openly reusable complete French text artifacts with provider provenance; API key required"
+    },
+    {
+      "id": "translation-review",
+      "name": "Translation & manuscript review",
+      "statePath": "work/world_books/review/state.json",
+      "target": 2000,
+      "watchAfterSeconds": 900,
+      "redAfterSeconds": 3600,
+      "detail": "Language, completeness, rights, relevance, and global duplicate validation"
+    },
+    {
+      "id": "translated-staging",
+      "name": "World Books · Translated staging",
+      "statePath": "work/world_books/staging/state.json",
+      "target": 100,
+      "watchAfterSeconds": 900,
+      "redAfterSeconds": 3600,
+      "detail": "Dedicated web_sweeper_world_translation_staging collection; never shared with ordinary Web Sweeper staging"
+    },
+    {
+      "id": "publisher",
+      "kind": "publisher",
+      "name": "Approved Web Sweeper World publisher",
+      "statePath": "work/world_books/publisher/state.json",
+      "target": 100,
+      "watchAfterSeconds": 900,
+      "redAfterSeconds": 3600,
+      "detail": "One serialized writer; only independently approved translated-staging manuscripts"
+    }
+  ],
+  "actions": {}
+}

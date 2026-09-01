@@ -1,6 +1,9 @@
 {
   "workspace": "./sweeper-data",
+  "engine": {"mode": "ultra"},
   "nurture": {"threshold": 30},
+  "tertiary": {"enabled": false, "inquisitive_enabled": false,
+    "adapter_enabled": false, "signals": ["nurture", "pivot", "continuation"]},
   "user_agent": "Example University Sweeper V2/0.1 (archives@example.edu)",
   "layout": {"major_slots": 2, "minor_slots": 2},
   "policy": {
@@ -17,9 +20,9 @@
     "reviewer_command": []
   },
   "sources": [
-    {"id":"major-one","slot":1,"lane":"major","manifest":"./manifests/major-one.jsonl","workers":2,"requests_per_second":1.0},
-    {"id":"major-two","slot":2,"lane":"major","manifest":"./manifests/major-two.jsonl","workers":2,"requests_per_second":1.0},
-    {"id":"minor-one","slot":1,"lane":"minor","manifest":"./manifests/minor-one.jsonl","continuation_manifests":[],"target_items":500,"workers":1,"requests_per_second":0.5},
-    {"id":"minor-two","slot":2,"lane":"minor","manifest":"./manifests/minor-two.jsonl","continuation_manifests":[],"target_items":500,"workers":1,"requests_per_second":0.5}
+    {"id":"major-one","slot":1,"lane":"major","manifest":"./manifests/major-one.jsonl","batch_size":50,"workers":2,"requests_per_second":1.0},
+    {"id":"major-two","slot":2,"lane":"major","manifest":"./manifests/major-two.jsonl","batch_size":100,"workers":2,"requests_per_second":1.0},
+    {"id":"minor-one","slot":1,"lane":"minor","manifest":"./manifests/minor-one.jsonl","continuation_manifests":[],"target_items":500,"batch_size":50,"workers":1,"requests_per_second":0.5},
+    {"id":"minor-two","slot":2,"lane":"minor","manifest":"./manifests/minor-two.jsonl","continuation_manifests":[],"target_items":500,"batch_size":50,"workers":1,"requests_per_second":0.5}
   ]
 }

@@ -1,0 +1,135 @@
+{
+  "schema_version": 2,
+  "practice_mode": true,
+  "source_slot_count": 10,
+  "active_slot": 1,
+  "transition_policy": {
+    "automatic": true,
+    "full_unit_action": "restart-current-source",
+    "exhausted_source_action": "stage-positive-remainder-retire-and-advance",
+    "empty_exhausted_source_action": "discard-source-candidate-file-retire-and-advance",
+    "require_exact_staging_receipt": true,
+    "require_cleanup_receipt": true,
+    "confirm_old_process_dead": true,
+    "prevent_overlapping_sources": true,
+    "exclude_prior_identifiers_and_hashes": true
+  },
+  "throughput_policy": {
+    "measurement": "rolling-accepted-books",
+    "minimum_accepted_sample": 100,
+    "baseline_seconds_per_100": 466,
+    "slow_source_multiplier": 2.0,
+    "slow_source_threshold_seconds_per_100": 932,
+    "slow_source_action": "mark-slow-right-now-and-transition-at-next-safe-receipt-boundary",
+    "preserve_accepted_remainder": true,
+    "never_kill_in_flight_download": true
+  },
+  "publication_policy": {
+    "desired_batch_size": "REPLACE_WITH_1_TO_1000",
+    "allowed_examples": [100, 250, 500, 1000],
+    "publish_positive_final_remainder": true,
+    "one_serialized_live_writer": true,
+    "auto_restart_after_live_verification": true,
+    "live_verify_every_publication_batch": true
+  },
+  "source_slots": [
+    {
+      "slot": 1,
+      "id": "open-library",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_OPEN_LIBRARY_DIRECT_DOWNLOAD_ADAPTER"],
+      "allow_partial_on_exhaustion": true,
+      "eligibility": "public complete text; direct machine download; no login or borrowing"
+    },
+    {
+      "slot": 2,
+      "id": "internet-archive",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_DIRECT_DOWNLOAD_ADAPTER"],
+      "allow_partial_on_exhaustion": true,
+      "eligibility": "public downloadable complete-text derivatives only; exclude restricted items"
+    },
+    {
+      "slot": 3,
+      "id": "library-of-congress",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_LOC_DIGITIZED_BOOKS_DIRECT_DOWNLOAD_ADAPTER"],
+      "allow_partial_on_exhaustion": true,
+      "eligibility": "public LOC API record with a direct complete-text resource URL"
+    },
+    {
+      "slot": 4,
+      "id": "ia-american-libraries",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_ADAPTER", "--query", "mediatype:texts AND collection:americana AND language:eng AND year:[0 TO 1930] AND format:\"DjVuTXT\" AND NOT access-restricted-item:true"],
+      "allow_partial_on_exhaustion": true,
+      "verified_source_boundary": 1299926,
+      "eligibility": "public unrestricted DjVuTXT derivative through the proven Internet Archive flow"
+    },
+    {
+      "slot": 5,
+      "id": "ia-university-of-toronto",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_ADAPTER", "--query", "mediatype:texts AND collection:toronto AND language:eng AND year:[0 TO 1930] AND format:\"DjVuTXT\" AND NOT access-restricted-item:true"],
+      "allow_partial_on_exhaustion": true,
+      "verified_source_boundary": 297069,
+      "eligibility": "public unrestricted DjVuTXT derivative through the proven Internet Archive flow"
+    },
+    {
+      "slot": 6,
+      "id": "ia-internet-archive-books",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_ADAPTER", "--query", "mediatype:texts AND collection:internetarchivebooks AND language:eng AND year:[0 TO 1930] AND format:\"DjVuTXT\" AND NOT access-restricted-item:true"],
+      "allow_partial_on_exhaustion": true,
+      "verified_source_boundary": 248107,
+      "eligibility": "public unrestricted DjVuTXT derivative through the proven Internet Archive flow"
+    },
+    {
+      "slot": 7,
+      "id": "ia-california-digital-library",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_ADAPTER", "--query", "mediatype:texts AND collection:cdl AND language:eng AND year:[0 TO 1930] AND format:\"DjVuTXT\" AND NOT access-restricted-item:true"],
+      "allow_partial_on_exhaustion": true,
+      "verified_source_boundary": 182672,
+      "eligibility": "public unrestricted DjVuTXT derivative through the proven Internet Archive flow"
+    },
+    {
+      "slot": 8,
+      "id": "ia-medical-heritage-library",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_ADAPTER", "--query", "mediatype:texts AND collection:medicalheritagelibrary AND language:eng AND year:[0 TO 1930] AND format:\"DjVuTXT\" AND NOT access-restricted-item:true"],
+      "allow_partial_on_exhaustion": true,
+      "verified_source_boundary": 168166,
+      "eligibility": "public unrestricted DjVuTXT derivative through the proven Internet Archive flow"
+    },
+    {
+      "slot": 9,
+      "id": "ia-european-libraries",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_ADAPTER", "--query", "mediatype:texts AND collection:europeanlibraries AND language:eng AND year:[0 TO 1930] AND format:\"DjVuTXT\" AND NOT access-restricted-item:true"],
+      "allow_partial_on_exhaustion": true,
+      "verified_source_boundary": 133604,
+      "eligibility": "public unrestricted DjVuTXT derivative through the proven Internet Archive flow"
+    },
+    {
+      "slot": 10,
+      "id": "ia-biodiversity-heritage-library",
+      "acquisition_target": 1000,
+      "launch_command": ["REPLACE_WITH_INTERNET_ARCHIVE_ADAPTER", "--query", "mediatype:texts AND collection:biodiversity AND language:eng AND year:[0 TO 1930] AND format:\"DjVuTXT\" AND NOT access-restricted-item:true"],
+      "allow_partial_on_exhaustion": true,
+      "verified_source_boundary": 105970,
+      "eligibility": "public unrestricted DjVuTXT derivative through the proven Internet Archive flow"
+    }
+  ],
+  "routes": [
+    {"from":"open-library","to":"internet-archive","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-01-stage.json","cleanup_receipt":"receipts/slot-01-cleanup.json","checkpoint":"checkpoints/slot-01.json","commands_are_placeholders":true},
+    {"from":"internet-archive","to":"library-of-congress","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-02-stage.json","cleanup_receipt":"receipts/slot-02-cleanup.json","checkpoint":"checkpoints/slot-02.json","commands_are_placeholders":true},
+    {"from":"library-of-congress","to":"ia-american-libraries","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-03-stage.json","cleanup_receipt":"receipts/slot-03-cleanup.json","checkpoint":"checkpoints/slot-03.json","commands_are_placeholders":true},
+    {"from":"ia-american-libraries","to":"ia-university-of-toronto","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-04-stage.json","cleanup_receipt":"receipts/slot-04-cleanup.json","checkpoint":"checkpoints/slot-04.json","commands_are_placeholders":true},
+    {"from":"ia-university-of-toronto","to":"ia-internet-archive-books","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-05-stage.json","cleanup_receipt":"receipts/slot-05-cleanup.json","checkpoint":"checkpoints/slot-05.json","commands_are_placeholders":true},
+    {"from":"ia-internet-archive-books","to":"ia-california-digital-library","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-06-stage.json","cleanup_receipt":"receipts/slot-06-cleanup.json","checkpoint":"checkpoints/slot-06.json","commands_are_placeholders":true},
+    {"from":"ia-california-digital-library","to":"ia-medical-heritage-library","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-07-stage.json","cleanup_receipt":"receipts/slot-07-cleanup.json","checkpoint":"checkpoints/slot-07.json","commands_are_placeholders":true},
+    {"from":"ia-medical-heritage-library","to":"ia-european-libraries","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-08-stage.json","cleanup_receipt":"receipts/slot-08-cleanup.json","checkpoint":"checkpoints/slot-08.json","commands_are_placeholders":true},
+    {"from":"ia-european-libraries","to":"ia-biodiversity-heritage-library","target":1000,"allow_partial_on_exhaustion":true,"completion_receipt":"receipts/slot-09-stage.json","cleanup_receipt":"receipts/slot-09-cleanup.json","checkpoint":"checkpoints/slot-09.json","commands_are_placeholders":true}
+  ]
+}

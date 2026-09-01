@@ -13,7 +13,7 @@ from .state import State
 from .translation_fleet import TranslationFleet
 
 
-PIVOT_SECONDS = 60
+PIVOT_SECONDS = 600
 
 
 def _now() -> str:

@@ -12,7 +12,13 @@ from pathlib import Path
 LANGUAGES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",
     "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "ru": "Russian",
-    "el": "Greek", "la": "Latin",
+    "el": "Greek", "la": "Latin", "pl": "Polish", "ja": "Japanese",
+    "zh": "Chinese", "cs": "Czech", "sv": "Swedish", "da": "Danish",
+    "no": "Norwegian", "fi": "Finnish", "hu": "Hungarian",
+    "ro": "Romanian", "uk": "Ukrainian", "ar": "Arabic", "he": "Hebrew",
+    "tr": "Turkish", "ko": "Korean", "bg": "Bulgarian", "hr": "Croatian",
+    "sr": "Serbian", "sk": "Slovak", "sl": "Slovenian", "ca": "Catalan",
+    "eu": "Basque", "gl": "Galician", "is": "Icelandic",
 }
 
 

@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "projectRoot": ".",
+  "metricsPath": "work/developer-interface-metrics.json",
+  "codexLive": 0,
+  "lanes": [
+    {
+      "id": "public-source-opti",
+      "name": "Public Source Opti",
+      "statePath": "work/source-one/state.json",
+      "navigationPath": "work/source-one/navigation-query.json",
+      "target": 20000,
+      "candidateTarget": 20000,
+      "displayCumulativeProgress": true,
+      "watchAfterSeconds": 120,
+      "redAfterSeconds": 900,
+      "detail": "200-point optimized public-source acquisition; checkpoint-preserving and staging-only"
+    },
+    {
+      "id": "source-two",
+      "name": "Source lane two",
+      "statePath": "work/source-two/state.json",
+      "target": 2000,
+      "watchAfterSeconds": 900,
+      "redAfterSeconds": 3600,
+      "detail": "Configure this lane for an authorized public source"
+    },
+    {
+      "id": "publisher",
+      "kind": "publisher",
+      "name": "Stage-to-live publisher",
+      "statePath": "work/publisher/state.json",
+      "target": 100,
+      "watchAfterSeconds": 900,
+      "redAfterSeconds": 3600,
+      "detail": "One serialized production writer"
+    }
+  ],
+  "actions": {}
+}
