@@ -29,6 +29,7 @@ class Source:
     enabled: bool = True
     requests_per_second: float = 1.0
     workers: int = 1
+    batch_size: int = 50
     headers: Dict[str, str] = field(default_factory=dict)
     continuation_manifests: List[str] = field(default_factory=list)
     target_items: int = 0
@@ -68,6 +69,15 @@ class Translation:
 
 
 @dataclass
+class Tertiary:
+    """Optional powerless observations and a separately toggled consumer."""
+    enabled: bool = False
+    inquisitive_enabled: bool = False
+    adapter_enabled: bool = False
+    signals: List[str] = field(default_factory=lambda: ["nurture", "pivot", "continuation"])
+
+
+@dataclass
 class Config:
     workspace: Path
     user_agent: str
@@ -79,4 +89,6 @@ class Config:
     sources: List[Source]
     policy: Policy
     translation: Translation
+    tertiary: Tertiary = field(default_factory=Tertiary)
+    engine_mode: str = "ultra"
     nurture_threshold: int = 30

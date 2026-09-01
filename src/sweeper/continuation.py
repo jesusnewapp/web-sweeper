@@ -50,6 +50,37 @@ DEFAULT_POOL = (
 )
 
 
+def mandatory_reload(last_receipted_unit: int, requested_unit: int = 1,
+                     *, live_owner: bool = False,
+                     shared_integrity_ok: bool = True,
+                     capacity_available: bool = True) -> dict:
+    """Choose the receipt-safe next unit without trusting disposable files.
+
+    Cache snapshots, candidate slices, cursors, and download memory are never
+    inputs to this decision. Their absence selects dynamic discovery after the
+    launch; it cannot prevent the launch itself.
+    """
+    if last_receipted_unit < 0 or requested_unit < 1:
+        raise ValueError("unit numbers are out of range")
+    next_unit = max(requested_unit, last_receipted_unit + 1)
+    safety_holds = []
+    if live_owner:
+        safety_holds.append("live-owner")
+    if not shared_integrity_ok:
+        safety_holds.append("shared-integrity")
+    if not capacity_available:
+        safety_holds.append("capacity-floor")
+    return {
+        "action": "adopt-live-owner" if live_owner else
+                  "preserve-and-retry" if safety_holds else
+                  "mandatory-reload",
+        "nextUnit": next_unit,
+        "discoveryFallback": "dynamic-discovery",
+        "disposableFilesMayVetoReload": False,
+        "safetyHolds": safety_holds,
+    }
+
+
 def _score(action: str, source: Source, counts: dict, peer_stages: dict) -> tuple[int, list[str]]:
     accepted = int(counts.get("accepted", 0)); failed = int(counts.get("failed", 0))
     deficit = max(0, source.target_items - accepted) if source.target_items else 0

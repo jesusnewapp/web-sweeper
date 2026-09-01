@@ -1,0 +1,23 @@
+{
+  "response": {
+    "numFound": 3,
+    "docs": [
+      {
+        "identifier": "pilgrimsprogress00buny",
+        "title": "The Pilgrim's Progress",
+        "creator": "John Bunyan"
+      },
+      {
+        "identifier": "cityofgod01augu",
+        "title": "The City of God",
+        "creator": ["Augustine of Hippo"]
+      },
+      {
+        "identifier": "sermons01spur",
+        "title": "Sermons",
+        "creator": "Charles H. Spurgeon"
+      }
+    ]
+  },
+  "nextCursorMark": "next-page-token"
+}

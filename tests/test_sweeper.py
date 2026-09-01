@@ -47,11 +47,13 @@ class SweeperV2Test(unittest.TestCase):
             root=Path(directory); items={f"source:{n}":hashlib.sha256(str(n).encode()).hexdigest() for n in range(30)}
             result=nurture_preserve(root,items,"validated",30)
             self.assertTrue(result["active"]); self.assertEqual(30,result["members"])
-            self.assertGreaterEqual(result["operationalAuthorityScore"],80)
+            self.assertGreaterEqual(result["nurtureIntensityPercent"],80)
+            self.assertEqual("none",result["tertiaryAuthority"])
+            self.assertFalse(result["advisory"])
             self.assertTrue(Path(result["snapshot"]).exists())
             self.assertTrue(result["singleItemNeverBlocksContinuation"])
 
-    def test_pivot_enforcer_holds_source_and_translator_to_sixty_seconds(self):
+    def test_pivot_enforcer_holds_source_and_translator_to_ten_minutes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             lanes = [{"lane": "source-one", "kind": "source", "required": True,
@@ -60,7 +62,9 @@ class SweeperV2Test(unittest.TestCase):
                       "counts": {"queued": 2}}]
             first = evaluate(root, lanes, current_epoch=1000)
             self.assertFalse(first["enforcementRequired"])
-            overdue = evaluate(root, lanes, current_epoch=1060)
+            almost = evaluate(root, lanes, current_epoch=1599)
+            self.assertFalse(almost["enforcementRequired"])
+            overdue = evaluate(root, lanes, current_epoch=1600)
             self.assertTrue(overdue["enforcementRequired"])
             self.assertEqual(["source-one", "translator"], overdue["overdue"])
             self.assertTrue(overdue["doesNotChoosePivot"])
@@ -86,6 +90,21 @@ class SweeperV2Test(unittest.TestCase):
             self.assertEqual(2, config.major_slots)
             self.assertEqual(2, config.minor_slots)
             self.assertEqual(4, len(config.sources))
+            self.assertEqual([50, 100, 50, 50], [source.batch_size for source in config.sources])
+
+    def test_source_and_translation_batch_sizes_are_operator_selected_but_capped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base = {"workspace": "data", "user_agent": "Test Institute (test@example.org)",
+                "layout": {"major_slots": 2, "minor_slots": 1}, "policy": {},
+                "sources": [{"id": "one", "slot": 1, "lane": "major",
+                    "manifest": "items.jsonl", "batch_size": 1000}]}
+            path = root / "sweeper.json"; path.write_text(json.dumps(base))
+            self.assertEqual(1000, load_config(path).sources[0].batch_size)
+            base["sources"][0]["batch_size"] = 1001
+            path.write_text(json.dumps(base))
+            with self.assertRaisesRegex(ValueError, "between 1 and 1,000"):
+                load_config(path)
 
     def test_light_layout_can_expand_to_six(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -194,6 +213,31 @@ class SweeperV2Test(unittest.TestCase):
             self.assertEqual({"accepted": 1, "duplicate": 1}, first["counts"])
             self.assertEqual(first["counts"], second["counts"])
 
+    def test_source_batch_size_caps_new_acceptances_and_records_continuation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); manifest = root / "items.jsonl"; rows = []
+            for number in range(3):
+                payload = root / f"payload-{number}.txt"
+                payload.write_text(f"distinct record {number}")
+                rows.append({"id": str(number), "url": payload.as_uri(), "language": "en",
+                    "license": "CC0-1.0", "media_type": "text/plain"})
+            manifest.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+            config_path = root / "sweeper.json"
+            config_path.write_text(json.dumps({"workspace": "data",
+                "user_agent": "Test Institute (test@example.org)",
+                "layout": {"major_slots": 2, "minor_slots": 1},
+                "policy": {"languages": ["en"], "licenses": ["CC0-1.0"],
+                    "media_types": ["text/plain"]},
+                "sources": [{"id": "local", "slot": 1, "lane": "major",
+                    "manifest": "items.jsonl", "batch_size": 2,
+                    "requests_per_second": 10.0}]}))
+            first = run(load_config(config_path)); second = run(load_config(config_path))
+            self.assertEqual(2, first["counts"]["accepted"])
+            self.assertEqual(3, second["counts"]["accepted"])
+            events = activity_report(root / "data", 20)["recent"]
+            completed = [row for row in events if row["event"] == "source-batch-complete"]
+            self.assertEqual([2, 1], [row["detail"]["acceptedThisBatch"] for row in completed])
+
     def test_daemon_once_records_health(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -254,11 +298,13 @@ class SweeperV2Test(unittest.TestCase):
             self.assertEqual(2, result["counts"]["accepted"])
             self.assertFalse(result["continuationRequired"])
 
-    def test_translation_bridge_has_exact_ten_languages_and_fails_closed(self):
-        self.assertEqual(10, len(LANGUAGES))
+    def test_translation_bridge_has_supported_languages_and_fails_closed(self):
+        self.assertGreaterEqual(len(LANGUAGES), 25)
+        for language in ("fr", "pl", "nl", "de", "es", "ja", "zh", "la"):
+            self.assertIn(language, LANGUAGES)
         self.assertEqual("SWEEPER_TRANSLATOR_IT_EN", engine_variable("it", "en"))
         status = capabilities()
-        self.assertEqual(90, len(status["pairs"]))
+        self.assertEqual(len(LANGUAGES) * (len(LANGUAGES) - 1), len(status["pairs"]))
 
     def test_translation_fleet_validates_stages_hands_off_and_queues_next(self):
         with tempfile.TemporaryDirectory() as directory:

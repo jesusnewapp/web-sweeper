@@ -14,9 +14,10 @@ def preserve(root: Path, items: dict[str, str], stage: str, threshold: int = 30)
     digest=hashlib.sha256(canonical.encode()).hexdigest(); count=len(items)
     base=100 if count>=1000 else 95 if count>=300 else 85 if count>=100 else 70 if count>=50 else 55 if count>=threshold else 20
     bonus={"accepted":0,"reviewed":15,"validated":25,"staged":35,"upload-ready":45,"live-verified":50}.get(stage,0)
-    result={"schemaVersion":1,"collectionId":"nurture-"+digest[:16],"members":count,
+    result={"schemaVersion":2,"collectionId":"nurture-"+digest[:16],"members":count,
         "membershipSha256":digest,"lifecycleStage":stage,"threshold":threshold,
-        "active":count>=threshold,"operationalAuthorityScore":min(100,base+bonus),
+        "active":count>=threshold,"nurtureIntensityPercent":min(100,base+bonus),
+        "tertiaryAuthority":"none","advisory":False,"executionCoupling":False,
         "singleItemNeverBlocksContinuation":True,
         "failedItemAction":"quarantine-and-bookkeep",
         "validSurvivorAction":"preserve-and-advance",

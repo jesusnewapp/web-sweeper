@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import load_config
-from .engine import run
+from .engines import run_selected
 from .discovery import DEFAULT_CATEGORIES, discover
 from .dock import cleanup_verified_staging, promote, staged, validate_attestation
 from .state import State
@@ -19,6 +19,8 @@ from .continuation import build_plan
 from .enforcer import enforce
 from .activity import report as activity_report
 from .activity import record as activity_record
+from .tertiary import adapter_view, inquisitive_read, observe as tertiary_observe
+from .bridge import decision as bridge_decision
 
 
 EXAMPLE = {
@@ -26,6 +28,10 @@ EXAMPLE = {
     "user_agent": "YOUR INSTITUTION Sweeper V2/0.1 (YOUR-CONTACT@example.org)",
     "project": {"name": "My Collection", "overall_target_items": 0,
                 "daily_target_items": 0},
+    "engine": {"mode": "ultra"},
+    "tertiary": {"enabled": False, "inquisitive_enabled": False,
+        "adapter_enabled": False, "signals": ["nurture", "pivot", "continuation"]},
+    "bridge": {"enabled": False, "nurture_threshold_percent": 50.0},
     "layout": {"major_slots": 2, "minor_slots": 2},
     "policy": {
         "languages": ["en"], "licenses": ["PUBLIC-DOMAIN", "CC0-1.0", "CC-BY-4.0"],
@@ -129,14 +135,14 @@ def daemon(config_path: Path, interval: float, once: bool = False,
                 write_health({"mode": "always-running", "status": "working",
                     "checkedAt": datetime.now(timezone.utc).isoformat(), "progress": detail,
                     "consecutiveFailures": consecutive_failures})
-            result = run(config, progress=heartbeat)
+            result = run_selected(config, progress=heartbeat)
             pivot = enforce(config)
-            activity_record(config.workspace,"one-minute-pivot-evaluation",lane="pivot-enforcer",
+            activity_record(config.workspace,"ten-minute-pivot-evaluation",lane="pivot-enforcer",
                 status="action-required" if pivot.get("enforcementRequired") else "progressing",
                 detail={"enforcementRequired":pivot.get("enforcementRequired"),
                         "overdue":pivot.get("overdue",[])})
             payload.update({"status": "degraded" if result.get("sourceErrors") else "healthy",
-                            "result": result,"pivotEvaluation":pivot,"pivotEverySeconds":60})
+                            "result": result,"pivotEvaluation":pivot,"pivotEverySeconds":600})
         except Exception as error:
             payload.update({"status": "retrying", "error": f"{type(error).__name__}: {error}"})
             consecutive_failures += 1
@@ -144,7 +150,7 @@ def daemon(config_path: Path, interval: float, once: bool = False,
             consecutive_failures = 0
         next_delay = min(60.0, max_backoff, interval * (2 ** max(0, consecutive_failures - 1)))
         payload.update({"consecutiveFailures": consecutive_failures,
-                        "nextCheckSeconds": next_delay,"pivotEverySeconds":60})
+                        "nextCheckSeconds": next_delay,"pivotEverySeconds":600})
         write_health(payload)
         print(json.dumps(payload, indent=2), flush=True)
         if once:
@@ -160,9 +166,28 @@ def main() -> int:
     for name in ("validate", "run", "status", "plan", "sources"):
         command = sub.add_parser(name)
         command.add_argument("--config", type=Path, default=Path("sweeper.json"))
+        if name == "run":
+            command.add_argument("--engine", choices=("ultra", "dual", "v2"))
+    engine_mode = sub.add_parser("engine-mode")
+    engine_mode.add_argument("--config", type=Path, default=Path("sweeper.json"))
+    engine_mode.add_argument("--set", dest="selected", choices=("ultra", "dual", "v2"))
     activity_command = sub.add_parser("activity-log")
     activity_command.add_argument("--config", type=Path, default=Path("sweeper.json"))
     activity_command.add_argument("--limit", type=int, default=100)
+    tertiary_mode = sub.add_parser("tertiary-mode")
+    tertiary_mode.add_argument("--config", type=Path, default=Path("sweeper.json"))
+    tertiary_mode.add_argument("--set", dest="selected", choices=("on", "off"))
+    tertiary_mode.add_argument("--adapter", choices=("on", "off"))
+    tertiary_mode.add_argument("--inquisitive", choices=("on", "off"))
+    bridge_switch = sub.add_parser("bridge-switch")
+    bridge_switch.add_argument("--config", type=Path, default=Path("sweeper.json"))
+    bridge_switch.add_argument("--set", dest="selected", choices=("on", "off"))
+    bridge_switch.add_argument("--threshold", type=float)
+    bridge_switch.add_argument("--accepted", type=int, default=0)
+    bridge_switch.add_argument("--target", type=int, default=1)
+    for name in ("tertiary-observe", "tertiary-adapter", "inquisitive-read"):
+        command = sub.add_parser(name)
+        command.add_argument("--config", type=Path, default=Path("sweeper.json"))
     daemon_command = sub.add_parser("daemon")
     daemon_command.add_argument("--config", type=Path, default=Path("sweeper.json"))
     daemon_command.add_argument("--interval", type=float, default=60.0)
@@ -234,6 +259,21 @@ def main() -> int:
                              "overallTargetItems": raw.get("project", {}).get("overall_target_items", 0),
                              "dailyTargetItems": raw.get("project", {}).get("daily_target_items", 0)})
         print(json.dumps({"projects": projects, "count": len(projects)}, indent=2)); return 0
+    if args.command == "engine-mode":
+        path = args.config.resolve()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        current = str(raw.get("engine", {}).get("mode", "ultra"))
+        if args.selected:
+            raw.setdefault("engine", {})["mode"] = args.selected
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
+            load_config(path)
+            current = args.selected
+        print(json.dumps({"mode": current, "priority": ["ultra", "dual", "v2"],
+            "ultraIsPrimary": current in {"ultra", "dual"},
+            "dualContract": "Ultra leads; V2 is read-only shadow"}, indent=2))
+        return 0
     if args.command == "daemon":
         if args.interval < 5:
             raise SystemExit("daemon interval must be at least five seconds")
@@ -243,6 +283,51 @@ def main() -> int:
     if args.command == "activity-log":
         config=load_config(args.config.resolve())
         print(json.dumps(activity_report(config.workspace,args.limit),indent=2)); return 0
+    if args.command == "tertiary-mode":
+        path = args.config.resolve()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        tertiary = raw.setdefault("tertiary", {})
+        if args.selected:
+            tertiary["enabled"] = args.selected == "on"
+            if args.selected == "off":
+                tertiary["adapter_enabled"] = False
+        if args.inquisitive:
+            tertiary["inquisitive_enabled"] = args.inquisitive == "on"
+        if args.adapter:
+            tertiary["adapter_enabled"] = args.adapter == "on"
+        if args.selected or args.inquisitive or args.adapter:
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
+        config = load_config(path)
+        print(json.dumps({"enabled": config.tertiary.enabled,
+            "inquisitiveEnabled": config.tertiary.inquisitive_enabled,
+            "adapterEnabled": config.tertiary.adapter_enabled,
+            "legacyExecutionPathWhenOff": True,
+            "tertiaryAuthority": "none"}, indent=2)); return 0
+    if args.command == "bridge-switch":
+        path = args.config.resolve()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        bridge = raw.setdefault("bridge", {"enabled": False, "nurture_threshold_percent": 50.0})
+        if args.selected:
+            bridge["enabled"] = args.selected == "on"
+        if args.threshold is not None:
+            if not 0 <= args.threshold <= 100:
+                raise SystemExit("bridge threshold must be between 0 and 100")
+            bridge["nurture_threshold_percent"] = args.threshold
+        if args.selected or args.threshold is not None:
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
+        print(json.dumps(bridge_decision(
+            args.accepted, args.target, bool(bridge.get("enabled")),
+            float(bridge.get("nurture_threshold_percent", 50.0))), indent=2)); return 0
+    if args.command == "tertiary-observe":
+        print(json.dumps(tertiary_observe(load_config(args.config.resolve())), indent=2)); return 0
+    if args.command == "inquisitive-read":
+        print(json.dumps(inquisitive_read(load_config(args.config.resolve())), indent=2)); return 0
+    if args.command == "tertiary-adapter":
+        print(json.dumps(adapter_view(load_config(args.config.resolve())), indent=2)); return 0
     if args.command == "pivot-enforcer":
         if args.poll_seconds < 5:
             raise SystemExit("pivot-enforcer poll interval must be at least five seconds")
@@ -293,11 +378,13 @@ def main() -> int:
             result["cleanup"] = cleanup_verified_staging(config.workspace, args.cleanup_command)
         print(json.dumps(result, indent=2)); return 0
     config = load_config(args.config.resolve())
+    if args.command == "run" and args.engine:
+        config.engine_mode = args.engine
     if args.command == "validate":
         print(json.dumps({"valid": True, "sources": len(config.sources), "workspace": str(config.workspace)}, indent=2))
         return 0
     if args.command == "run":
-        print(json.dumps(run(config), indent=2))
+        print(json.dumps(run_selected(config), indent=2))
         return 0
     state = State(config.workspace / "state.sqlite3")
     try:

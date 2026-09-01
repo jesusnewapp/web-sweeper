@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .model import Config, Policy, Source, Translation
+from .model import Config, Policy, Source, Tertiary, Translation
 
 
 MAX_PROJECT_TARGET = 100_000_000_000
+MAX_BATCH_SIZE = 1_000
 
 
 def load_config(path: Path) -> Config:
@@ -38,6 +39,8 @@ def load_config(path: Path) -> Config:
         sources=sources,
         policy=Policy(**raw.get("policy", {})),
         translation=Translation(**raw.get("translation", {})),
+        tertiary=Tertiary(**raw.get("tertiary", {})),
+        engine_mode=str(raw.get("engine", {}).get("mode", "ultra")),
         nurture_threshold=int(raw.get("nurture", {}).get("threshold", 30)),
     )
     validate_config(config)
@@ -45,6 +48,15 @@ def load_config(path: Path) -> Config:
 
 
 def validate_config(config: Config) -> None:
+    allowed_tertiary_signals = {"nurture", "pivot", "continuation"}
+    if len(config.tertiary.signals) != len(set(config.tertiary.signals)):
+        raise ValueError("tertiary signals must be unique")
+    if any(signal not in allowed_tertiary_signals for signal in config.tertiary.signals):
+        raise ValueError("tertiary signals may contain only nurture, pivot, and continuation")
+    if config.tertiary.adapter_enabled and not config.tertiary.enabled:
+        raise ValueError("the tertiary adapter cannot be enabled while tertiary mode is off")
+    if config.engine_mode not in {"ultra", "dual", "v2"}:
+        raise ValueError("engine mode must be ultra, dual, or v2")
     if not config.project_name.strip():
         raise ValueError("project name cannot be empty")
     if not 1 <= config.nurture_threshold <= 10_000:
@@ -55,8 +67,8 @@ def validate_config(config: Config) -> None:
             raise ValueError(f"{label} must be between 0 and {MAX_PROJECT_TARGET:,}")
     if config.major_slots != 2 or not 1 <= config.minor_slots <= 6:
         raise ValueError("Sweeper requires two major slots and between one and six light slots")
-    if not 1 <= config.translation.batch_size <= 10_000:
-        raise ValueError("translation batch size must be between 1 and 10,000")
+    if not 1 <= config.translation.batch_size <= MAX_BATCH_SIZE:
+        raise ValueError("translation batch size must be between 1 and 1,000")
     if not config.translation.staging_collection.strip():
         raise ValueError("translation staging collection cannot be empty")
     if config.translation.enabled and config.translation.staging_collection.startswith("REPLACE_WITH_"):
@@ -84,6 +96,8 @@ def validate_config(config: Config) -> None:
             raise ValueError(f"invalid lane/slot for {source.id}")
         if source.workers < 1 or source.workers > (4 if source.lane == "major" else 2):
             raise ValueError(f"unsafe worker count for {source.id}")
+        if not 1 <= source.batch_size <= MAX_BATCH_SIZE:
+            raise ValueError(f"batch size must be between 1 and 1,000 for {source.id}")
         if source.requests_per_second <= 0 or source.requests_per_second > 10:
             raise ValueError(f"invalid request rate for {source.id}")
         if source.target_items < 0:

@@ -1,0 +1,7 @@
+{
+  "connections": [
+    {"name": "Local staging", "scope": "staged", "kind": "path", "location": "./staged.jsonl"},
+    {"name": "Local live", "scope": "live", "kind": "path", "location": "./live.json"},
+    {"name": "Cloud gateway", "scope": "live", "kind": "http", "location": "https://example.org/api/records", "headers": {"Authorization": "Bearer ${INQUIRY_TOKEN}"}}
+  ]
+}
