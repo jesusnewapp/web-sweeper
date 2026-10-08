@@ -94,6 +94,44 @@ class _WebSweeperDeveloperAppState extends State<WebSweeperDeveloperApp> {
   }
 }
 
+class PublicationTotals {
+  const PublicationTotals({this.published, this.verified});
+  final int? published;
+  final int? verified;
+  factory PublicationTotals.fromJson(Map<String, dynamic> json) =>
+      PublicationTotals(
+        published: (json['currentPublished'] as num?)?.toInt(),
+        verified: (json['currentLiveVerified'] as num?)?.toInt(),
+      );
+}
+
+class PublicationMetrics extends StatelessWidget {
+  const PublicationMetrics({
+    super.key,
+    required this.totals,
+    required this.live,
+  });
+  final PublicationTotals totals;
+  final bool live;
+  @override
+  Widget build(BuildContext context) => Wrap(
+    spacing: 10,
+    runSpacing: 10,
+    children: [
+      Metric(
+        label: 'Published this run',
+        value: live ? totals.published?.toString() ?? '—' : '—',
+        icon: Icons.cloud_upload_outlined,
+      ),
+      Metric(
+        label: 'Live verified this run',
+        value: live ? totals.verified?.toString() ?? '—' : '—',
+        icon: Icons.verified_outlined,
+      ),
+    ],
+  );
+}
+
 class DeveloperDashboard extends StatefulWidget {
   const DeveloperDashboard({
     super.key,
@@ -128,6 +166,7 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
   bool _hasLiveData = false;
   int _codexLive = 0;
   int _confirmedStaged = 0;
+  PublicationTotals _publicationTotals = const PublicationTotals();
   int _optimizationPoints = 0;
   List<ArchivedSourceView> _archivedSources = const [];
   String _endpoint = _defaultEndpoint;
@@ -376,6 +415,7 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
           : const <ArchivedSourceView>[];
       if (!mounted) return false;
       setState(() {
+        _publicationTotals = PublicationTotals.fromJson(payload);
         _codexLive = (payload['codexLive'] as num?)?.toInt() ?? _codexLive;
         _confirmedStaged =
             (payload['confirmedStaged'] as num?)?.toInt() ?? _confirmedStaged;
@@ -979,10 +1019,6 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
   }
 
   Widget _topArea() {
-    final currentUploaded = _models.fold<int>(
-      0,
-      (total, model) => total + model.uploaded,
-    );
     final healthy = _models
         .where((model) => model.health == Health.healthy)
         .length;
@@ -1013,10 +1049,9 @@ class _DeveloperDashboardState extends State<DeveloperDashboard> {
                   value: _hasLiveData ? _confirmedStaged.toString() : '—',
                   icon: Icons.inventory_2_outlined,
                 ),
-                Metric(
-                  label: 'Current uploaded',
-                  value: _hasLiveData ? currentUploaded.toString() : '—',
-                  icon: Icons.cloud_upload_outlined,
+                PublicationMetrics(
+                  totals: _publicationTotals,
+                  live: _hasLiveData,
                 ),
                 Metric(
                   label: 'Healthy lanes',
@@ -2082,6 +2117,12 @@ bool isTerminalModel(ModelView model) {
 bool isWaitingModel(ModelView model) => model.mode.toLowerCase() == 'queued';
 
 String candidateCounterLabel(ModelView model) {
+  final processed = model.modeDetail['candidateProgressCount'];
+  final target = model.modeDetail['candidateProgressTarget'];
+  final label = model.modeDetail['candidateProgressLabel'];
+  if (processed is num && target is num && label is String) {
+    return '$label: ${processed.toInt()} / ${target.toInt()}';
+  }
   final suffix = model.candidateTarget > 0 ? ' / ${model.candidateTarget}' : '';
   return 'Candidates screened: ${model.candidateCount}$suffix';
 }

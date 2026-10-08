@@ -153,3 +153,17 @@ down its child cleanly.
 - Push is a continuation request, not a permission bypass: no eligible staged unit means nothing is published.
 - The interface does not bypass duplicate screening, publication receipts, or live verification.
 - Staged, uploaded, published, and live-verified counts remain distinct.
+
+### Durable publication totals
+
+The dashboard reads `currentPublished` and `currentLiveVerified` from the
+controller's configured metrics file. These fields must count durable
+publication and deployment-verification receipts across completed units,
+separately. They remain visible while the publisher waits for its next unit;
+unavailable fields display an em dash rather than an invented zero.
+
+Saved-source adapters may report `reviewKind: "candidate-processing"`,
+`reviewProcessed`, `reviewTotal`, `sourceTextScreened`, and `screenPassed`. The controller shows that
+substage progress independently of the lane's approved (`accepted`) count,
+including during a capacity pause. Screening movement does not replace the
+Shepherd Model's accepted-growth health requirement.

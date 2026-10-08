@@ -77,6 +77,16 @@ def _count(value: Any) -> int:
         return 0
 
 
+def _optional_count(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and value >= 0 and value.is_integer():
+        return int(value)
+    return None
+
+
 def _batch_number(root: Any) -> int:
     match = re.search(r"(?:batch|unit)_(\d+)", str(root or ""))
     return int(match.group(1)) if match else 0
@@ -649,6 +659,29 @@ class SweeperController:
                 f"{active_review_accepted} newly accepted · "
                 f"{protected_prior_accepted} protected from the prior unit"
             )
+        # Saved hybrid adapters expose screening/identity progress independently
+        # of final approval, including while retrieval is paused or complete.
+        if review_total and (state.get("reviewKind") in {"source-screening", "candidate-processing", "canonical-preflight"} or not active_review):
+            processed = _count(state.get("reviewProcessed"))
+            paused = stage.casefold() == "capacity-protected"
+            preflight = state.get("reviewKind") == "canonical-preflight"
+            screening = state.get("reviewKind") in {"source-screening", "candidate-processing"}
+            mode_detail.update({
+                "substageProgressLabel": ("Canonical index preflight" if preflight else "Candidate processing paused · capacity guard" if paused else
+                                           "Processing candidates" if screening else "Identity review completed"),
+                "substageProgressCurrent": processed,
+                "substageProgressTarget": review_total,
+                "screenPassed": _count(state.get("screenPassed")),
+                "sourceTextScreened": _count(state.get("sourceTextScreened")),
+                "candidateProgressLabel": "Index preflight processed" if preflight else "Candidates processed" if screening else "Identity cases processed",
+                "candidateProgressCount": processed,
+                "candidateProgressTarget": review_total,
+                "reviewRemaining": max(0, review_total - processed),
+                "nextStage": "Personal review and independent validation of screening survivors",
+            })
+            if screening:
+                detail = (f"{processed}/{review_total} candidates processed · {_count(state.get('sourceTextScreened'))} source texts screened · {_count(state.get('screenPassed'))} screening passes recorded · "
+                          f"{accepted} approved" + (" · retrieval paused by capacity guard" if paused else ""))
         if stage.casefold() == "ready-for-next-batch":
             if str(state.get("nextStage", "")).casefold() == "source-exhausted":
                 mode_detail.update({
@@ -713,8 +746,8 @@ class SweeperController:
                     f"{accepted} authoritatively accepted"
                 )
             elif stage.casefold() == "preflight-running":
-                preflighted = _count(crawl_counts.get("preflighted"))
-                preflight_target = _count(crawl_counts.get("preflightTarget"))
+                preflighted = _count(crawl_counts.get("preflighted", state.get("reviewProcessed")))
+                preflight_target = _count(crawl_counts.get("preflightTarget", state.get("reviewTotal")))
                 mode = "acquisition"
                 mode_detail.update({
                     "mode": mode,
@@ -1209,6 +1242,7 @@ class SweeperController:
                 "complete": verified,
             }.get(stage, 0)
             target = {
+                "canonical-index-preflight": _count(progress.get("preflightTarget")),
                 "storage-upload": _count(progress.get("uploadTarget")) or accepted,
                 "publication-complete": _count(progress.get("publishable")) or accepted,
                 "live-verification": _count(progress.get("verificationTarget")) or accepted,
@@ -1720,7 +1754,9 @@ class SweeperController:
             "checkedAt": checked_at.isoformat().replace("+00:00", "Z"),
             "codexLive": codex_live,
             "confirmedStaged": _count(metrics.get("confirmedStaged")),
-            "metricsCheckedAt": metrics.get("checkedAt", ""),
+            "currentPublished": _optional_count(metrics.get("currentPublished")),
+            "currentLiveVerified": _optional_count(metrics.get("currentLiveVerified")),
+            "metricsCheckedAt": metrics.get("checkedAt", metrics.get("updatedAt", "")),
             "lanes": lanes,
             "archivedSources": archived_sources,
             "allHealthy": bool(lanes) and all(item["health"] == "healthy" for item in lanes),

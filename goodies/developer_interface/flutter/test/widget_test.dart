@@ -15,6 +15,78 @@ Future<void> pumpAt(WidgetTester tester, Size size) async {
 }
 
 void main() {
+  testWidgets('receipt totals stay visible when the publisher is idle', (
+    tester,
+  ) async {
+    final totals = PublicationTotals.fromJson({
+      'currentPublished': 4,
+      'currentLiveVerified': 3,
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: PublicationMetrics(totals: totals, live: true)),
+      ),
+    );
+    expect(find.text('Published this run'), findsOneWidget);
+    expect(find.text('Live verified this run'), findsOneWidget);
+    expect(find.text('4'), findsOneWidget);
+    expect(find.text('3'), findsOneWidget);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: PublicationMetrics(
+            totals: PublicationTotals.fromJson({
+              'currentPublished': 5,
+              'currentLiveVerified': 4,
+            }),
+            live: true,
+          ),
+        ),
+      ),
+    );
+    expect(find.text('5'), findsOneWidget);
+    expect(find.text('4'), findsOneWidget);
+    expect(find.text('3'), findsNothing);
+  });
+
+  testWidgets('unavailable receipt totals show unknown rather than zero', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: PublicationMetrics(
+            totals: PublicationTotals.fromJson({}),
+            live: true,
+          ),
+        ),
+      ),
+    );
+    expect(find.text('—'), findsNWidgets(2));
+    expect(find.text('0'), findsNothing);
+  });
+
+  test('candidate inventory is distinct from actual processed candidates', () {
+    final model = ModelView.fromJson({
+      'id': 'library-of-congress',
+      'name': 'LOC',
+      'stage': 'review-running',
+      'accepted': 1,
+      'target': 11386,
+      'candidateCount': 11386,
+      'candidateTarget': 11386,
+      'uploaded': 0,
+      'health': 'watch',
+      'mode': 'acquisition',
+      'modeDetail': {
+        'candidateProgressLabel': 'Candidates processed',
+        'candidateProgressCount': 1712,
+        'candidateProgressTarget': 11386,
+      },
+    });
+    expect(candidateCounterLabel(model), 'Candidates processed: 1712 / 11386');
+  });
+
   test('newest refresh response supersedes an older in-flight response', () {
     final gate = RequestGenerationGate();
     final periodic = gate.begin();

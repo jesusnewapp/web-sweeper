@@ -753,6 +753,75 @@ class ControllerTests(unittest.TestCase):
             second = controller.status()["lanes"][0]["progressSince"]
             self.assertNotEqual(first, second)
 
+    def test_completed_publication_totals_survive_idle_lane_and_refresh(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metrics = root / "metrics.json"
+            metrics.write_text(json.dumps({"currentPublished": 4, "currentLiveVerified": 4,
+                                          "updatedAt": "2026-10-08T01:00:00Z"}))
+            config = root / "config.json"
+            config.write_text(json.dumps({"projectRoot": str(root), "metricsPath": "metrics.json", "lanes": []}))
+            controller = SweeperController(config)
+            first = controller.status()
+            self.assertEqual(4, first["currentPublished"])
+            self.assertEqual(4, first["currentLiveVerified"])
+            self.assertEqual("2026-10-08T01:00:00Z", first["metricsCheckedAt"])
+            metrics.write_text(json.dumps({"currentPublished": 5, "currentLiveVerified": 4}))
+            second = controller.status()
+            self.assertEqual(5, second["currentPublished"])
+            self.assertEqual(4, second["currentLiveVerified"])
+
+    def test_missing_publication_metrics_remain_unknown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config.json"
+            config.write_text(json.dumps({"projectRoot": str(root), "lanes": []}))
+            status = SweeperController(config).status()
+            self.assertIsNone(status["currentPublished"])
+            self.assertIsNone(status["currentLiveVerified"])
+            (root / "metrics.json").write_text(json.dumps({"currentPublished": None, "currentLiveVerified": "unavailable"}))
+            config.write_text(json.dumps({"projectRoot": str(root), "metricsPath": "metrics.json", "lanes": []}))
+            status = SweeperController(config).status()
+            self.assertIsNone(status["currentPublished"])
+            self.assertIsNone(status["currentLiveVerified"])
+
+    def test_paused_source_keeps_screened_and_approved_counts_distinct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "state.json").write_text(json.dumps({
+                "status": "blocked", "stage": "capacity-protected", "reviewKind": "source-screening",
+                "reviewProcessed": 1712, "reviewTotal": 11386, "screenPassed": 187,
+                "accepted": 1, "target": 11386, "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }))
+            config = root / "config.json"
+            config.write_text(json.dumps({"projectRoot": str(root), "lanes": [
+                {"id": "library-of-congress", "statePath": "state.json", "target": 11386}]}))
+            lane = SweeperController(config).status()["lanes"][0]
+            self.assertEqual(1, lane["accepted"])
+            self.assertEqual(1712, lane["modeDetail"]["substageProgressCurrent"])
+            self.assertEqual(11386, lane["modeDetail"]["substageProgressTarget"])
+            self.assertEqual(187, lane["modeDetail"]["screenPassed"])
+            self.assertIn("paused", lane["modeDetail"]["substageProgressLabel"].lower())
+
+    def test_canonical_preflight_exposes_actual_counter_without_resetting_approvals(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "state.json").write_text(json.dumps({
+                "status": "running", "stage": "preflight-running", "reviewKind": "canonical-preflight",
+                "reviewProcessed": 5, "reviewTotal": 11386, "candidateCount": 11386,
+                "accepted": 1, "target": 11386, "screenPassed": 188,
+                "counts": {"clear": 5}, "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }))
+            config = root / "config.json"
+            config.write_text(json.dumps({"projectRoot": str(root), "lanes": [
+                {"id": "library-of-congress", "statePath": "state.json", "target": 11386}]}))
+            lane = SweeperController(config).status()["lanes"][0]
+            self.assertEqual(1, lane["accepted"])
+            self.assertEqual(5, lane["modeDetail"]["candidateProgressCount"])
+            self.assertEqual("Index preflight processed", lane["modeDetail"]["candidateProgressLabel"])
+            self.assertEqual(5, lane["modeDetail"]["substageProgressCurrent"])
+            self.assertEqual(11386, lane["modeDetail"]["substageProgressTarget"])
+
     def test_status_reads_lane_without_inventing_live_counts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
